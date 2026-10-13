@@ -23,22 +23,26 @@ import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.VarClientIntChanged;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.config.ConfigManager;
+import net.runelite.client.callback.ClientThread;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.*;
 import net.runelite.client.ui.*;
 import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.util.ImageUtil;
 
-@PluginDescriptor(name="Offer Scribe", description="Local-first GE fill ledger and read-only analytics", tags={"ge","trading","flipping"})
+@PluginDescriptor(name="Offer Scribe", internalName="offer-scribe", description="Local-first GE fill ledger and read-only analytics", tags={"ge","trading","flipping"})
 public final class OfferScribePlugin extends Plugin {
-    private static final String VERSION = "0.1.0";
+    private static final String VERSION = "0.2.0";
     @Inject private Client client;
     @Inject private ClientToolbar toolbar;
     @Inject private OverlayManager overlayManager;
     @Inject private GeRecommendationOverlay recommendationOverlay;
     @Inject private WikiMarketDataClient marketData;
     @Inject private GeInputAssistant inputAssistant;
-    @Inject private GeItemSearchAssistant itemSearchAssistant;
+    @Inject private ItemCatalog itemCatalog;
+    @Inject private DashboardSyncClient dashboardSync;
+    @Inject private LocalLedgerPersistence ledgerPersistence;
+    @Inject private ClientThread clientThread;
     @Inject private OfferScribeConfig config;
     private final GeOfferObserver observer = new GeOfferObserver();
     private final FillDeltaDetector detector = new FillDeltaDetector();
@@ -47,7 +51,8 @@ public final class OfferScribePlugin extends Plugin {
     private final TradeLedger ledger = new TradeLedger();
     private final PositionEngine positions = new PositionEngine();
     private final Map<Integer, OfferSnapshot> prior = new HashMap<>();
-    private final String installation = UUID.randomUUID().toString(), session = UUID.randomUUID().toString();
+    private String installation;
+    private final String session = UUID.randomUUID().toString();
     private NavigationButton navigationButton; private GeTradingPanel panel;
     private int requestedMarketItem = -1;
     private Instant lastOpportunityRequest = Instant.EPOCH;
@@ -58,6 +63,8 @@ public final class OfferScribePlugin extends Plugin {
     private Opportunity activeOpportunity;
     private GeRecommendationOverlay.GuidedPhase guidedPhase = GeRecommendationOverlay.GuidedPhase.BUY;
     private int activeSlot = -1;
+    private int guidedQuantity;
+    private int quantityAfterCollection;
     private Boolean lastMembersWorld;
     private List<MarketItemSnapshot> marketUniverse = Collections.emptyList();
     private long availableCoins;
@@ -65,28 +72,41 @@ public final class OfferScribePlugin extends Plugin {
     @Provides OfferScribeConfig config(ConfigManager manager) { return manager.getConfig(OfferScribeConfig.class); }
     @Override protected void startUp() {
         panel = new GeTradingPanel();
+        installation = dashboardSync.installationId();
         BufferedImage icon = ImageUtil.loadImageResource(getClass(), "/offer-scribe-icon.png");
         navigationButton = NavigationButton.builder().tooltip("Offer Scribe").icon(icon).panel(panel).priority(8).build();
         toolbar.addNavigation(navigationButton);
         overlayManager.add(recommendationOverlay);
         panel.setSuggestionControls(this::setRiskLevel, this::skipSuggestion);
         inputAssistant.start();
+        dashboardSync.start(panel::showSyncStatus);
+        ledgerPersistence.load(events -> clientThread.invokeLater(() -> {
+            for (TradeEvent event : events) if (ledger.append(event)) {
+                positions.apply(event); panel.addFill(event,itemCatalog.name(event.getItemId()),ledger.size());
+                dashboardSync.enqueue(event);
+            }
+            panel.setEventCount(ledger.size());
+            rankCurrentUniverse();
+        }));
     }
     @Override protected void shutDown() {
         if (navigationButton != null) toolbar.removeNavigation(navigationButton);
         overlayManager.remove(recommendationOverlay);
         recommendationOverlay.clear();
         inputAssistant.stop();
-        itemSearchAssistant.clear();
+        dashboardSync.stop();
         requestedMarketItem = -1;
         prior.clear();
     }
     @Subscribe public void onGrandExchangeOfferChanged(GrandExchangeOfferChanged event) {
         OfferSnapshot current = observer.snapshot(event.getSlot(), event.getOffer(), Instant.now());
-        panel.observeOffer(current);
+        String itemName = current.getItemId() <= 0 ? "Empty" : itemCatalog.name(current.getItemId());
+        panel.observeOffer(current, itemName);
         OfferSnapshot previous = prior.put(event.getSlot(), current);
         detector.detect(previous, current, TradeEvent.Source.LIVE_EVENT, profileId(), installation, session, VERSION)
-            .ifPresent(fill -> { if (ledger.append(fill)) { positions.apply(fill); panel.addFill(fill, ledger.size()); } });
+            .ifPresent(fill -> { if (ledger.append(fill)) { positions.apply(fill); panel.addFill(fill,
+                itemCatalog.name(fill.getItemId()), ledger.size()); dashboardSync.enqueue(fill);
+                ledgerPersistence.save(ledger.events()); } });
         advanceGuidance(current);
     }
 
@@ -100,10 +120,10 @@ public final class OfferScribePlugin extends Plugin {
     }
 
     @Subscribe public void onGameTick(GameTick tick) {
+        dashboardSync.tick();
         if (!config.marketDataEnabled()) {
             recommendationOverlay.clear();
             inputAssistant.clear();
-            itemSearchAssistant.clear();
             activeOpportunity = null;
             rankedOpportunities = Collections.emptyList();
             panel.showActiveOpportunity(null, riskLevel);
@@ -112,6 +132,7 @@ public final class OfferScribePlugin extends Plugin {
             panel.showMarketDisabled();
             return;
         }
+        panel.showMarketEnabled();
         boolean membersWorld = client.getWorldType().contains(WorldType.MEMBERS);
         if (lastMembersWorld == null || lastMembersWorld != membersWorld) {
             lastMembersWorld = membersWorld;
@@ -151,7 +172,6 @@ public final class OfferScribePlugin extends Plugin {
     }
     @Subscribe public void onVarClientIntChanged(VarClientIntChanged event) {
         inputAssistant.onVarClientIntChanged(event);
-        itemSearchAssistant.onVarClientIntChanged(event);
     }
 
     private void refreshOpportunities() {
@@ -162,6 +182,7 @@ public final class OfferScribePlugin extends Plugin {
             opportunityRequestPending = false;
             if (!config.marketDataEnabled()) return;
             marketUniverse = items;
+            itemCatalog.update(items);
             availableCoins = inventoryCoins();
             rankCurrentUniverse();
         }, message -> {
@@ -184,7 +205,19 @@ public final class OfferScribePlugin extends Plugin {
         panel.showOpportunities(rankedOpportunities.subList(0, Math.min(10, rankedOpportunities.size())));
         panel.showAvailableCash(availableCoins);
         suggestionIndex = 0;
+        for (Opportunity value : rankedOpportunities) {
+            long open = positions.openQuantity(value.itemId);
+            if (open > 0) { activateOpenPosition(value, (int)Math.min(Integer.MAX_VALUE, open)); return; }
+        }
         selectActiveSuggestion();
+    }
+
+    private void activateOpenPosition(Opportunity value, int quantity) {
+        activeOpportunity=value; guidedPhase=GeRecommendationOverlay.GuidedPhase.SELL;
+        guidedQuantity=quantity; quantityAfterCollection=0; activeSlot=-1;
+        panel.showActiveOpportunity(value,riskLevel); panel.showGuidedPhase(value,guidedPhase,guidedQuantity);
+        recommendationOverlay.showOpportunity(value); recommendationOverlay.showPhase(guidedPhase,activeSlot,guidedQuantity);
+        applyActiveRecommendation(value);
     }
 
     private void setRiskLevel(String value) {
@@ -206,10 +239,11 @@ public final class OfferScribePlugin extends Plugin {
         activeOpportunity = eligible.isEmpty() ? null : eligible.get(Math.floorMod(suggestionIndex, eligible.size()));
         guidedPhase = GeRecommendationOverlay.GuidedPhase.BUY;
         activeSlot = -1;
+        guidedQuantity = activeOpportunity == null ? 0 : activeOpportunity.quantity;
+        quantityAfterCollection = 0;
         panel.showActiveOpportunity(activeOpportunity, riskLevel);
         recommendationOverlay.showOpportunity(activeOpportunity);
-        recommendationOverlay.showPhase(guidedPhase, activeSlot);
-        itemSearchAssistant.setOpportunity(activeOpportunity);
+        recommendationOverlay.showPhase(guidedPhase, activeSlot, guidedQuantity);
         if (activeOpportunity == null) inputAssistant.clear();
         else applyActiveRecommendation(activeOpportunity);
     }
@@ -226,7 +260,8 @@ public final class OfferScribePlugin extends Plugin {
             || guidedPhase == GeRecommendationOverlay.GuidedPhase.COLLECT_SELL;
         Recommendation recommendation = new Recommendation(value.itemId,
             selling ? OfferSnapshot.Side.SELL : OfferSnapshot.Side.BUY,
-            selling ? value.sellPrice : value.buyPrice, value.quantity, value.profitPerItem, value.roi, value.dataTimestamp,
+            selling ? value.sellPrice : value.buyPrice,
+            guidedQuantity > 0 ? guidedQuantity : value.quantity, value.profitPerItem, value.roi, value.dataTimestamp,
             "OSRS Wiki prices and hourly volume; tax, budget, buy limit, freshness, and stability adjusted");
         recommendationOverlay.show(recommendation);
         inputAssistant.setRecommendation(recommendation);
@@ -238,26 +273,40 @@ public final class OfferScribePlugin extends Plugin {
         if (offer.getItemId() == activeOpportunity.itemId) {
             activeSlot = offer.getSlot();
             if (offer.getSide() == OfferSnapshot.Side.BUY) {
-                guidedPhase = offer.getState() == OfferSnapshot.State.COMPLETED
-                    ? GeRecommendationOverlay.GuidedPhase.COLLECT_BUY
-                    : GeRecommendationOverlay.GuidedPhase.WAIT_BUY;
+                guidedQuantity = offer.getTotalQuantity();
+                if (offer.getState() == OfferSnapshot.State.COMPLETED || offer.getState() == OfferSnapshot.State.CANCELLED) {
+                    quantityAfterCollection = offer.getFilledQuantity();
+                    guidedPhase = GeRecommendationOverlay.GuidedPhase.COLLECT_BUY;
+                } else guidedPhase = GeRecommendationOverlay.GuidedPhase.WAIT_BUY;
             } else {
-                guidedPhase = offer.getState() == OfferSnapshot.State.COMPLETED
-                    ? GeRecommendationOverlay.GuidedPhase.COLLECT_SELL
-                    : GeRecommendationOverlay.GuidedPhase.WAIT_SELL;
+                guidedQuantity = offer.getTotalQuantity();
+                if (offer.getState() == OfferSnapshot.State.COMPLETED || offer.getState() == OfferSnapshot.State.CANCELLED) {
+                    quantityAfterCollection = offer.getTotalQuantity() - offer.getFilledQuantity();
+                    guidedPhase = GeRecommendationOverlay.GuidedPhase.COLLECT_SELL;
+                } else guidedPhase = GeRecommendationOverlay.GuidedPhase.WAIT_SELL;
             }
         } else if (offer.getState() == OfferSnapshot.State.EMPTY && offer.getSlot() == activeSlot) {
             if (guidedPhase == GeRecommendationOverlay.GuidedPhase.COLLECT_BUY) {
+                if (quantityAfterCollection <= 0) { suggestionIndex++; selectActiveSuggestion(); return; }
+                guidedQuantity = quantityAfterCollection;
                 guidedPhase = GeRecommendationOverlay.GuidedPhase.SELL;
                 applyActiveRecommendation(activeOpportunity);
             } else if (guidedPhase == GeRecommendationOverlay.GuidedPhase.COLLECT_SELL) {
+                if (quantityAfterCollection > 0) {
+                    guidedQuantity = quantityAfterCollection;
+                    guidedPhase = GeRecommendationOverlay.GuidedPhase.SELL;
+                    applyActiveRecommendation(activeOpportunity);
+                    recommendationOverlay.showPhase(guidedPhase, activeSlot, guidedQuantity);
+                    panel.showGuidedPhase(activeOpportunity, guidedPhase, guidedQuantity);
+                    return;
+                }
                 suggestionIndex++;
                 selectActiveSuggestion();
                 return;
             }
         } else return;
-        recommendationOverlay.showPhase(guidedPhase, activeSlot);
-        panel.showGuidedPhase(activeOpportunity, guidedPhase);
+        recommendationOverlay.showPhase(guidedPhase, activeSlot, guidedQuantity);
+        panel.showGuidedPhase(activeOpportunity, guidedPhase, guidedQuantity);
     }
     private String profileId() { return "local-" + Integer.toUnsignedString(Objects.hash(client.getAccountHash()), 36); }
 }

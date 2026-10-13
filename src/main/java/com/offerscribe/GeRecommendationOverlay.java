@@ -12,6 +12,7 @@ import net.runelite.api.VarPlayer;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.VarbitID;
 import net.runelite.api.widgets.Widget;
+import net.runelite.api.widgets.ComponentID;
 import net.runelite.client.ui.overlay.Overlay;
 import net.runelite.client.ui.overlay.OverlayLayer;
 import net.runelite.client.ui.overlay.OverlayPosition;
@@ -28,6 +29,7 @@ final class GeRecommendationOverlay extends Overlay {
     private volatile Opportunity opportunity;
     private volatile GuidedPhase phase = GuidedPhase.BUY;
     private volatile int activeSlot = -1;
+    private volatile int targetQuantity;
 
     @Inject GeRecommendationOverlay(Client client) {
         this.client = client;
@@ -37,7 +39,9 @@ final class GeRecommendationOverlay extends Overlay {
 
     void show(Recommendation recommendation) { this.recommendation = recommendation; }
     void showOpportunity(Opportunity opportunity) { this.opportunity = opportunity; }
-    void showPhase(GuidedPhase phase, int activeSlot) { this.phase = phase; this.activeSlot = activeSlot; }
+    void showPhase(GuidedPhase phase, int activeSlot, int targetQuantity) {
+        this.phase = phase; this.activeSlot = activeSlot; this.targetQuantity = targetQuantity;
+    }
     void clear() { recommendation = null; opportunity = null; }
 
     @Override public Dimension render(Graphics2D graphics) {
@@ -93,9 +97,16 @@ final class GeRecommendationOverlay extends Overlay {
         Widget container = client.getWidget(InterfaceID.GE_OFFERS, OFFER_CONTAINER_CHILD);
         if (container == null) return false;
         int item = client.getVarpValue(VarPlayer.CURRENT_GE_ITEM);
-        if (item != active.itemId) return outline(graphics, container.getChild(0), null);
+        if (item != active.itemId) {
+            Widget search=client.getWidget(ComponentID.CHATBOX_GE_SEARCH_RESULTS);
+            if(search!=null&&!search.isHidden()&&search.getBounds()!=null){
+                Rectangle bounds=search.getBounds();graphics.setColor(new Color(15,23,42,230));graphics.fillRoundRect(bounds.x+8,bounds.y-28,Math.min(280,bounds.width-16),24,7,7);graphics.setColor(Color.WHITE);graphics.drawString("Offer Scribe: search for "+active.name,bounds.x+15,bounds.y-11);return true;
+            }
+            return outline(graphics, container.getChild(0), null);
+        }
         int quantity = client.getVarbitValue(VarbitID.GE_NEWOFFER_QUANTITY);
-        if (quantity != active.quantity) return outline(graphics, container.getChild(51), new Rectangle(1, 6, 33, 23));
+        int desiredQuantity = targetQuantity > 0 ? targetQuantity : active.quantity;
+        if (quantity != desiredQuantity) return outline(graphics, container.getChild(51), new Rectangle(1, 6, 33, 23));
         long price = client.getVarpLongValue(GE_SETUP_PRICE_VARP);
         long targetPrice = phase == GuidedPhase.SELL ? active.sellPrice : active.buyPrice;
         if (price != targetPrice) return outline(graphics, container.getChild(54), new Rectangle(1, 6, 33, 23));

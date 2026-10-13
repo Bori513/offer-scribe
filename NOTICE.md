@@ -2,8 +2,7 @@
 
 Offer Scribe is licensed under BSD-2-Clause.
 
-The GE price-prompt widget, user-triggered quick-set behavior, suggested-item
-row, and exact widget highlight patterns include adaptations from Flipping
+The GE price-prompt widget and exact widget highlight patterns include adaptations from Flipping
 Copilot under its BSD 2-Clause License. No Flipping Copilot branding, assets,
 private API, recommendation service, or credentials are used.
 

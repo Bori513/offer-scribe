@@ -31,7 +31,7 @@ final class WikiMarketDataClient {
     void fetch(int itemId, Consumer<MarketPrice> success, Consumer<String> failure) {
         Request request = new Request.Builder()
             .url(BASE + "/latest?id=" + itemId)
-            .header("User-Agent", "Offer Scribe RuneLite plugin/0.1.0")
+            .header("User-Agent", "Offer Scribe RuneLite plugin/0.2.0")
             .build();
         http.newCall(request).enqueue(new Callback() {
             @Override public void onFailure(Call call, IOException exception) {
@@ -103,7 +103,7 @@ final class WikiMarketDataClient {
 
     private <T> void request(String path, Parser<T> parser, Consumer<T> success, Consumer<String> failure) {
         Request request = new Request.Builder().url(BASE + path)
-            .header("User-Agent", "Offer Scribe RuneLite plugin/0.1.0")
+            .header("User-Agent", "Offer Scribe RuneLite plugin/0.2.0")
             .build();
         http.newCall(request).enqueue(new Callback() {
             @Override public void onFailure(Call call, IOException exception) { failure.accept("Market request failed"); }

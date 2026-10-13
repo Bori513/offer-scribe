@@ -15,10 +15,9 @@ actions. Every game action remains the player's choice.
 - Public OSRS Wiki price, volume, item-mapping, and buy-limit data
 - Tax-aware expected profit and ROI estimates
 - Guided highlights for buy, collect, sell, and collect-proceeds stages
-- A user-triggered field helper: click the displayed text or press the configured
-  key to fill the currently open quantity or price field; the player still
-  presses Enter and confirms manually
+- Passive in-game prompts showing the exact quantity or price to enter manually
 - Local observed-offer and fill history
+- Optional paired synchronization to a self-hosted, read-only dashboard
 
 Recommendations are estimates, not guarantees. Market prices can change before
 an offer completes.
@@ -35,6 +34,11 @@ Offer Scribe reads only the visible inventory coin count for position sizing. It
 does not read or transmit names, chat, friends, bank contents, unrelated
 inventory contents, credentials, hardware identifiers, or Jagex session data.
 There is no telemetry.
+
+Dashboard synchronization is a separate explicit opt-in. It sends only the
+documented pseudonymous immutable GE fill fields to the HTTPS API configured by
+the user. The local queue survives restarts and retries with backoff. The
+dashboard cannot submit or otherwise control game actions.
 
 ## Development
 

@@ -1,194 +1,96 @@
 package com.offerscribe;
 
-import java.awt.BorderLayout;
-import java.awt.Color;
-import java.time.Duration;
-import java.time.Instant;
-import com.offerscribe.model.OfferSnapshot;
-import com.offerscribe.model.Opportunity;
-import com.offerscribe.model.Recommendation;
-import com.offerscribe.model.TradeEvent;
+import com.offerscribe.model.*;
+import java.awt.*;
+import java.time.*;
 import java.util.List;
 import java.util.function.Consumer;
 import javax.swing.*;
+import javax.swing.border.EmptyBorder;
+import net.runelite.client.ui.ColorScheme;
 import net.runelite.client.ui.PluginPanel;
 
 final class GeTradingPanel extends PluginPanel {
-    private final JLabel summary = new JLabel("No fills observed this session");
-    private final JEditorPane recommendation = new JEditorPane("text/html", "");
-    private final DefaultListModel<String> offers = new DefaultListModel<>();
-    private final DefaultListModel<String> fills = new DefaultListModel<>();
-    private final DefaultListModel<String> opportunities = new DefaultListModel<>();
-    private final JLabel opportunityStatus = new JLabel("Opportunity scan is off");
-    private final JLabel availableCash = new JLabel("Available inventory cash: unknown");
-    private final JEditorPane activeSuggestion = new JEditorPane("text/html", "<html>No active suggestion</html>");
-    private final JButton lowRisk = new JButton("Low");
-    private final JButton mediumRisk = new JButton("Med");
-    private final JButton highRisk = new JButton("High");
-    private final JButton skip = new JButton("Skip ▶");
+    private static final Color ACCENT = new Color(52, 211, 190), MUTED = new Color(148, 163, 184), CARD = new Color(24, 34, 49);
+    private final JLabel connection = new JLabel(" MARKET OFF "), cash = new JLabel("Inventory cash unavailable"),
+        marketStatus = new JLabel("Enable market data to begin"), syncStatus = new JLabel("Dashboard sync off"), summary = new JLabel("No fills observed this session");
+    private final JEditorPane active = html(), detail = html();
+    private final DefaultListModel<String> ideas = new DefaultListModel<>(), offers = new DefaultListModel<>(), fills = new DefaultListModel<>();
+    private final JRadioButton low = risk("Low"), medium = risk("Med"), high = risk("High");
+    private final JButton skip = new JButton("Skip suggestion  ›");
 
     GeTradingPanel() {
-        setLayout(new BorderLayout());
-        JPanel content = new JPanel(); content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
-        JLabel title = new JLabel("Offer Scribe");
-        title.setFont(title.getFont().deriveFont(18f));
-        title.setForeground(new Color(65, 190, 205));
-        content.add(title);
-        content.add(Box.createVerticalStrut(6));
-        activeSuggestion.setEditable(false);
-        activeSuggestion.setOpaque(false);
-        activeSuggestion.putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, Boolean.TRUE);
-        content.add(activeSuggestion);
-        JPanel controls = new JPanel();
-        controls.add(new JLabel("Risk:")); controls.add(lowRisk); controls.add(mediumRisk);
-        controls.add(highRisk); controls.add(skip);
-        content.add(controls);
-        content.add(Box.createVerticalStrut(6));
-        content.add(new JLabel("Top opportunities"));
-        content.add(availableCash);
-        content.add(opportunityStatus);
-        JList<String> opportunityList = new JList<>(opportunities);
-        opportunityList.setVisibleRowCount(5);
-        content.add(new JScrollPane(opportunityList));
-        content.add(Box.createVerticalStrut(8));
-        content.add(new JLabel("Selected GE item"));
-        recommendation.setEditable(false);
-        recommendation.setOpaque(false);
-        recommendation.putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, Boolean.TRUE);
-        showMarketDisabled();
-        content.add(recommendation);
-        content.add(Box.createVerticalStrut(8));
-        content.add(summary);
-        content.add(Box.createVerticalStrut(8));
-        content.add(new JLabel("Observed GE offers"));
-        content.add(new JScrollPane(new JList<>(offers)));
-        content.add(Box.createVerticalStrut(8));
-        content.add(new JLabel("Observed fills"));
-        content.add(new JScrollPane(new JList<>(fills)));
-        content.add(new JLabel("Guidance only; you perform every game action."));
-        add(content, BorderLayout.NORTH);
+        super(false); setLayout(new BorderLayout()); setBackground(ColorScheme.DARK_GRAY_COLOR);
+        JPanel body = vertical(); body.setBorder(new EmptyBorder(12, 10, 14, 10));
+        body.add(header()); body.add(Box.createVerticalStrut(10)); body.add(card(active)); body.add(Box.createVerticalStrut(8));
+        body.add(controls()); body.add(Box.createVerticalStrut(8));
+        for (JLabel label : new JLabel[]{cash, marketStatus, syncStatus, summary}) { label.setForeground(label == cash ? Color.WHITE : MUTED); body.add(label); body.add(Box.createVerticalStrut(3)); }
+        body.add(Box.createVerticalStrut(6)); body.add(tabs()); body.add(Box.createVerticalStrut(8));
+        JLabel note = new JLabel("Guidance only — every game action stays manual."); note.setForeground(MUTED); note.setFont(note.getFont().deriveFont(10f)); body.add(note);
+        JScrollPane scroll = new JScrollPane(body); scroll.setBorder(null); scroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        scroll.getVerticalScrollBar().setUnitIncrement(16); add(scroll); showMarketDisabled(); showActiveOpportunity(null, "MEDIUM");
     }
 
-    void setSuggestionControls(Consumer<String> riskChange, Runnable skipAction) {
-        lowRisk.addActionListener(event -> riskChange.accept("LOW"));
-        mediumRisk.addActionListener(event -> riskChange.accept("MEDIUM"));
-        highRisk.addActionListener(event -> riskChange.accept("HIGH"));
-        skip.addActionListener(event -> skipAction.run());
+    private JPanel header() {
+        JPanel value = new JPanel(new BorderLayout()); value.setOpaque(false); JPanel names = vertical();
+        JLabel title = new JLabel("Offer Scribe"); title.setForeground(Color.WHITE); title.setFont(title.getFont().deriveFont(Font.BOLD, 20f));
+        JLabel sub = new JLabel("Grand Exchange copilot"); sub.setForeground(MUTED); names.add(title); names.add(sub);
+        connection.setOpaque(true); connection.setBorder(new EmptyBorder(4, 6, 4, 6)); connection.setFont(connection.getFont().deriveFont(Font.BOLD, 10f));
+        value.add(names, BorderLayout.WEST); value.add(connection, BorderLayout.EAST); return value;
     }
 
-    void showActiveOpportunity(Opportunity value, String riskLevel) {
-        String html = value == null ? "<html><b>No candidate for this risk level</b></html>"
-            : String.format("<html><body style='color:#e2e8f0;background:#182231;padding:8px'>"
-                + "<span style='color:#42d3c8'><b>BUY %,d %s</b></span><br>"
-                + "Buy at <b>%,d gp</b> · sell near <b>%,d gp</b><br>"
-                + "Expected %,d gp · %.2f%% ROI<br>"
-                + "<span style='color:#94a3b8'>%s risk · hourly two-sided volume %,d</span>"
-                + "</body></html>", value.quantity, value.name, value.buyPrice, value.sellPrice,
-                value.expectedProfit, value.roi * 100, value.risk, value.balancedHourlyVolume);
-        SwingUtilities.invokeLater(() -> {
-            activeSuggestion.setText(html);
-            lowRisk.setEnabled(!"LOW".equals(riskLevel));
-            mediumRisk.setEnabled(!"MEDIUM".equals(riskLevel));
-            highRisk.setEnabled(!"HIGH".equals(riskLevel));
-            skip.setEnabled(value != null);
-        });
+    private JPanel controls() {
+        JPanel value = vertical(); value.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(new Color(45, 59, 75)), new EmptyBorder(8, 8, 8, 8)));
+        JLabel title = new JLabel("RISK TOLERANCE"); title.setForeground(MUTED); title.setFont(title.getFont().deriveFont(Font.BOLD, 10f)); value.add(title);
+        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 3, 4)); row.setOpaque(false); ButtonGroup group = new ButtonGroup();
+        for (JRadioButton button : new JRadioButton[]{low, medium, high}) { group.add(button); row.add(button); } medium.setSelected(true); value.add(row);
+        skip.setAlignmentX(Component.LEFT_ALIGNMENT); skip.setFocusPainted(false); value.add(skip); return value;
     }
 
-    void showGuidedPhase(Opportunity value, GeRecommendationOverlay.GuidedPhase phase) {
-        if (value == null) return;
-        String instruction;
-        switch (phase) {
-            case WAIT_BUY: instruction = "Buy offer open — waiting for completion"; break;
-            case COLLECT_BUY: instruction = "Collect the bought items"; break;
-            case SELL: instruction = "SELL " + String.format("%,d %s near %,d gp", value.quantity, value.name, value.sellPrice); break;
-            case WAIT_SELL: instruction = "Sell offer open — waiting for completion"; break;
-            case COLLECT_SELL: instruction = "Collect the sale proceeds"; break;
-            default: instruction = "BUY " + String.format("%,d %s at %,d gp", value.quantity, value.name, value.buyPrice);
-        }
-        String html = "<html><body style='color:#e2e8f0;background:#182231;padding:8px'>"
-            + "<span style='color:#42d3c8'><b>" + instruction + "</b></span><br>"
-            + String.format("Expected %,d gp · %.2f%% ROI<br><span style='color:#94a3b8'>%s risk</span>",
-                value.expectedProfit, value.roi * 100, value.risk) + "</body></html>";
-        SwingUtilities.invokeLater(() -> activeSuggestion.setText(html));
+    private JTabbedPane tabs() {
+        JTabbedPane value = new JTabbedPane(); value.setPreferredSize(new Dimension(PANEL_WIDTH - 20, 270));
+        value.addTab("Ideas", list(ideas)); value.addTab("Offers", list(offers)); value.addTab("Fills", list(fills));
+        value.addTab("Details", new JScrollPane(card(detail))); return value;
     }
 
-    void showOpportunityLoading() {
-        SwingUtilities.invokeLater(() -> opportunityStatus.setText("Refreshing OSRS Wiki market data…"));
+    private static JScrollPane list(ListModel<String> model) {
+        JList<String> value = new JList<>(model); value.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        value.setCellRenderer((list, text, index, selected, focus) -> { JLabel label = new JLabel(text); label.setOpaque(true);
+            label.setBorder(new EmptyBorder(7, 7, 7, 7)); label.setBackground(selected ? new Color(38, 64, 74) : CARD); label.setForeground(Color.WHITE); return label; });
+        return new JScrollPane(value);
     }
+    private static JPanel vertical() { JPanel value = new JPanel(); value.setOpaque(false); value.setLayout(new BoxLayout(value, BoxLayout.Y_AXIS)); return value; }
+    private static JPanel card(JEditorPane pane) { JPanel value = new JPanel(new BorderLayout()); value.setBackground(CARD);
+        value.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(new Color(45, 59, 75)), new EmptyBorder(10, 10, 10, 10))); value.add(pane); return value; }
+    private static JEditorPane html() { JEditorPane value = new JEditorPane("text/html", ""); value.setEditable(false); value.setOpaque(false); value.putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, true); return value; }
+    private static JRadioButton risk(String text) { JRadioButton value = new JRadioButton(text); value.setOpaque(false); value.setForeground(Color.WHITE); value.setFocusPainted(false); return value; }
 
-    void showOpportunities(List<Opportunity> values) {
-        SwingUtilities.invokeLater(() -> {
-            opportunities.clear();
-            for (Opportunity value : values) {
-                opportunities.addElement(String.format("<html><b>%s</b> · %s risk<br>Buy %,d → sell %,d · qty %,d<br>%,d gp · %.2f%% ROI · vol %,d</html>",
-                    value.name, value.risk, value.buyPrice, value.sellPrice, value.quantity,
-                    value.expectedProfit, value.roi * 100, value.balancedHourlyVolume));
-            }
-            opportunityStatus.setText(values.isEmpty()
-                ? "No candidates passed freshness, liquidity, tax, and risk filters"
-                : values.size() + " ranked candidates · transparent model v1");
-        });
+    void setSuggestionControls(Consumer<String> change, Runnable next) { low.addActionListener(e -> change.accept("LOW")); medium.addActionListener(e -> change.accept("MEDIUM")); high.addActionListener(e -> change.accept("HIGH")); skip.addActionListener(e -> next.run()); }
+    void showActiveOpportunity(Opportunity value, String selectedRisk) {
+        String text = value == null ? "<html><b>No suitable opportunity</b><br><font color='#94a3b8'>Keep coins in inventory or choose another risk.</font></html>"
+            : String.format("<html><font color='#34d3be'><b>NEXT · BUY</b></font><br><font size='+1'><b>%,d × %s</b></font><br>Buy %,d · sell %,d gp<br><font color='#86efac'><b>+%,d gp</b></font> · %.2f%% ROI<br><font color='#94a3b8'>%s risk · %,d volume</font></html>", value.quantity, value.name, value.buyPrice, value.sellPrice, value.expectedProfit, value.roi * 100, value.risk, value.balancedHourlyVolume);
+        SwingUtilities.invokeLater(() -> { active.setText(text); low.setSelected("LOW".equals(selectedRisk)); medium.setSelected("MEDIUM".equals(selectedRisk)); high.setSelected("HIGH".equals(selectedRisk)); skip.setEnabled(value != null); });
     }
-
-    void showOpportunityError(String message) {
-        SwingUtilities.invokeLater(() -> opportunityStatus.setText("Opportunity refresh failed: " + message));
+    void showGuidedPhase(Opportunity value, GeRecommendationOverlay.GuidedPhase phase, int quantity) {
+        if (value == null) return; String action;
+        switch (phase) { case WAIT_BUY: action="WAIT · BUY OFFER OPEN"; break; case COLLECT_BUY: action="COLLECT · BOUGHT ITEMS"; break; case SELL: action="NEXT · SELL"; break; case WAIT_SELL: action="WAIT · SELL OFFER OPEN"; break; case COLLECT_SELL: action="COLLECT · SALE PROCEEDS"; break; default: action="NEXT · BUY"; }
+        long price = phase == GeRecommendationOverlay.GuidedPhase.SELL ? value.sellPrice : value.buyPrice;
+        int amount = quantity > 0 ? quantity : value.quantity;
+        long profit = Math.multiplyExact(value.profitPerItem, amount);
+        String text = String.format("<html><font color='#34d3be'><b>%s</b></font><br><font size='+1'><b>%,d × %s</b></font><br>Target %,d gp<br><font color='#86efac'>Expected +%,d gp · %.2f%% ROI</font></html>", action, amount, value.name, price, profit, value.roi * 100);
+        SwingUtilities.invokeLater(() -> active.setText(text));
     }
-
-    void showAvailableCash(long coins) {
-        SwingUtilities.invokeLater(() -> availableCash.setText(
-            String.format("Available inventory cash: %,d gp", coins)));
-    }
-
-    void showMarketDisabled() {
-        SwingUtilities.invokeLater(() -> recommendation.setText("<html><body style='color:#cbd5e1'>"
-            + "<b>Recommendations are off</b><br>Enable <i>External market data</i> in Offer Scribe settings."
-            + "</body></html>"));
-    }
-
-    void showLoading(int itemId) {
-        SwingUtilities.invokeLater(() -> recommendation.setText("<html><b>Checking item " + itemId
-            + "…</b><br>Waiting for public market evidence.</html>"));
-    }
-
-    void showMarketError(String message) {
-        SwingUtilities.invokeLater(() -> recommendation.setText("<html><b>No recommendation</b><br>"
-            + message + "</html>"));
-    }
-
-    void showRecommendation(Recommendation value) {
-        long age = Math.max(0, Duration.between(value.dataTimestamp, Instant.now()).toMinutes());
-        String action = value.side == OfferSnapshot.Side.BUY ? "BUY manually" : "SELL manually";
-        String profitability = value.expectedUnitProfit > 0
-            ? String.format("%,d gp/unit after tax · %.2f%% ROI", value.expectedUnitProfit, value.roi * 100)
-            : "No positive observed post-tax spread — reconsider";
-        String html = String.format("<html><body style='color:#e2e8f0;background:#182231;padding:8px'>"
-                + "<span style='color:#42d3c8'><b>%s</b></span><br>"
-                + "<span style='font-size:18px'><b>%,d gp</b></span> · qty %,d<br>"
-                + "%s<br><span style='color:#94a3b8'>Data age: %d min<br>%s</span>"
-                + "</body></html>", action, value.suggestedPrice, value.suggestedQuantity,
-            profitability, age, value.evidence);
-        SwingUtilities.invokeLater(() -> recommendation.setText(html));
-    }
-
-    void observeOffer(OfferSnapshot offer) {
-        SwingUtilities.invokeLater(() -> {
-            while (offers.size() <= offer.getSlot()) offers.addElement("Waiting for offer data…");
-            String text = offer.getState() == OfferSnapshot.State.EMPTY
-                ? "Slot " + (offer.getSlot() + 1) + " — Empty"
-                : String.format("Slot %d — %s item %d: %,d/%,d @ %,d gp (%s)",
-                    offer.getSlot() + 1, offer.getSide(), offer.getItemId(), offer.getFilledQuantity(),
-                    offer.getTotalQuantity(), offer.getPricePerItem(), offer.getState());
-            offers.set(offer.getSlot(), text);
-        });
-    }
-
-    void addFill(TradeEvent fill, int count) {
-        SwingUtilities.invokeLater(() -> {
-            summary.setText(count + " immutable fill event(s)");
-            fills.add(0, String.format("%s item %d: %,d for %,d gp", fill.getSide(),
-                fill.getItemId(), fill.getQuantityDelta(), fill.getCoinsDelta()));
-        });
-    }
-
+    void showOpportunityLoading() { SwingUtilities.invokeLater(() -> marketStatus.setText("Refreshing Wiki market evidence…")); }
+    void showOpportunities(List<Opportunity> values) { SwingUtilities.invokeLater(() -> { ideas.clear(); for (Opportunity value : values) ideas.addElement(String.format("<html><b>%s</b> · %s<br>%,d → %,d gp · qty %,d<br><font color='#86efac'>+%,d gp · %.2f%%</font></html>", value.name, value.risk, value.buyPrice, value.sellPrice, value.quantity, value.expectedProfit, value.roi * 100)); marketStatus.setText(values.isEmpty() ? "No fresh, liquid candidates for this cash/risk level" : values.size() + " ranked ideas · transparent model"); }); }
+    void showOpportunityError(String message) { SwingUtilities.invokeLater(() -> marketStatus.setText("Refresh failed: " + message)); }
+    void showSyncStatus(String message) { SwingUtilities.invokeLater(() -> syncStatus.setText(message)); }
+    void showAvailableCash(long coins) { SwingUtilities.invokeLater(() -> cash.setText(String.format("Available cash  %,d gp", coins))); }
+    void showMarketDisabled() { SwingUtilities.invokeLater(() -> { connection.setText(" MARKET OFF "); connection.setBackground(new Color(71,45,48)); connection.setForeground(new Color(248,113,113)); detail.setText("<html><b>Recommendations are off</b><br>Enable External market data in settings.</html>"); }); }
+    void showMarketEnabled() { SwingUtilities.invokeLater(() -> { connection.setText(" WIKI LIVE "); connection.setBackground(new Color(24,78,67)); connection.setForeground(new Color(110,231,183)); }); }
+    void showLoading(int itemId) { SwingUtilities.invokeLater(() -> detail.setText("<html><b>Checking item " + itemId + "…</b></html>")); }
+    void showMarketError(String message) { SwingUtilities.invokeLater(() -> detail.setText("<html><b>No recommendation</b><br>" + message + "</html>")); }
+    void showRecommendation(Recommendation value) { long age = Math.max(0, Duration.between(value.dataTimestamp, Instant.now()).toMinutes()); String text = String.format("<html><font color='#34d3be'><b>%s manually</b></font><br><font size='+1'><b>%,d gp</b></font> · qty %,d<br>%,d gp/unit · %.2f%% ROI<br><font color='#94a3b8'>Data age %d min<br>%s</font></html>", value.side, value.suggestedPrice, value.suggestedQuantity, value.expectedUnitProfit, value.roi * 100, age, value.evidence); SwingUtilities.invokeLater(() -> detail.setText(text)); }
+    void observeOffer(OfferSnapshot value, String name) { SwingUtilities.invokeLater(() -> { while (offers.size() <= value.getSlot()) offers.addElement("Waiting…"); String text = value.getState() == OfferSnapshot.State.EMPTY ? "Slot " + (value.getSlot()+1) + " · Empty" : String.format("<html><b>Slot %d · %s %s</b><br>%,d/%,d @ %,d gp · %s</html>", value.getSlot()+1, value.getSide(), name, value.getFilledQuantity(), value.getTotalQuantity(), value.getPricePerItem(), value.getState()); offers.set(value.getSlot(), text); }); }
+    void addFill(TradeEvent value, String name, int count) { SwingUtilities.invokeLater(() -> { summary.setText(count + " immutable fill event(s)"); fills.add(0, String.format("<html><b>%s %s</b><br>%,d for %,d gp</html>", value.getSide(), name, value.getQuantityDelta(), value.getCoinsDelta())); }); }
     void setEventCount(int count) { SwingUtilities.invokeLater(() -> summary.setText(count + " immutable fill event(s)")); }
 }
