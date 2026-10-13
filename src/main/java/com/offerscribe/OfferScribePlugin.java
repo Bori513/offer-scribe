@@ -70,6 +70,7 @@ public final class OfferScribePlugin extends Plugin {
     private List<MarketItemSnapshot> marketUniverse = Collections.emptyList();
     private long availableCoins;
     private boolean inventoryInitialized;
+    private boolean startupRecoveryPending;
 
     @Provides OfferScribeConfig config(ConfigManager manager) { return manager.getConfig(OfferScribeConfig.class); }
     @Override protected void startUp() throws Exception {
@@ -88,6 +89,7 @@ public final class OfferScribePlugin extends Plugin {
             for (TradeEvent event : events) if (ledger.append(event)) {
                 positions.apply(event); panel.addFill(event,itemCatalog.name(event.getItemId()),ledger.size());
             }
+            startupRecoveryPending = true;
             panel.setEventCount(ledger.size());
             rankCurrentUniverse();
         }));
@@ -225,6 +227,15 @@ public final class OfferScribePlugin extends Plugin {
             allowMembers, 50, Instant.now());
         panel.showOpportunities(rankedOpportunities.subList(0, Math.min(10, rankedOpportunities.size())));
         panel.showAvailableCash(availableCoins);
+        if (startupRecoveryPending && inventoryInitialized) {
+            Opportunity recovery = recoverHeldPosition();
+            startupRecoveryPending = false;
+            if (recovery != null) {
+                long open = positions.openQuantity(recovery.itemId);
+                activateOpenPosition(recovery, (int)Math.min(Math.min(Integer.MAX_VALUE, open), inventoryQuantity(recovery.itemId)));
+                return;
+            }
+        }
         if (activeOpportunity != null && (activeSlot >= 0 || guidedPhase != GeRecommendationOverlay.GuidedPhase.BUY)) return;
         suggestionIndex = 0;
         Opportunity recovery = recoverHeldPosition();
