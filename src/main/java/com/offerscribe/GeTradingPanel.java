@@ -13,7 +13,7 @@ import net.runelite.client.ui.PluginPanel;
 final class GeTradingPanel extends PluginPanel {
     private static final Color ACCENT = new Color(52, 211, 190), MUTED = new Color(148, 163, 184), CARD = new Color(24, 34, 49);
     private final JLabel connection = new JLabel(" MARKET OFF "), cash = new JLabel("Inventory cash unavailable"),
-        marketStatus = new JLabel("Enable market data to begin"), syncStatus = new JLabel("Dashboard sync off"), summary = new JLabel("No fills observed this session");
+        marketStatus = new JLabel("Enable market data to begin"), syncStatus = new JLabel("API export off"), summary = new JLabel("No fills observed this session");
     private final JEditorPane active = html(), detail = html();
     private final DefaultListModel<String> ideas = new DefaultListModel<>(), offers = new DefaultListModel<>(), fills = new DefaultListModel<>();
     private final JRadioButton low = risk("Low"), medium = risk("Med"), high = risk("High");

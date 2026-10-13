@@ -40,7 +40,7 @@ public final class OfferScribePlugin extends Plugin {
     @Inject private WikiMarketDataClient marketData;
     @Inject private GeInputAssistant inputAssistant;
     @Inject private ItemCatalog itemCatalog;
-    @Inject private DashboardSyncClient dashboardSync;
+    @Inject private FillWebhookClient webhookClient;
     @Inject private LocalLedgerPersistence ledgerPersistence;
     @Inject private ClientThread clientThread;
     @Inject private OfferScribeConfig config;
@@ -70,20 +70,21 @@ public final class OfferScribePlugin extends Plugin {
     private long availableCoins;
 
     @Provides OfferScribeConfig config(ConfigManager manager) { return manager.getConfig(OfferScribeConfig.class); }
-    @Override protected void startUp() {
+    @Override protected void startUp() throws Exception {
         panel = new GeTradingPanel();
-        installation = dashboardSync.installationId();
+        installation = UUID.randomUUID().toString();
+        net.runelite.client.util.Filepath dataDirectory = getPluginDirectory();
+        ledgerPersistence.setDataDirectory(dataDirectory);
         BufferedImage icon = ImageUtil.loadImageResource(getClass(), "/offer-scribe-icon.png");
         navigationButton = NavigationButton.builder().tooltip("Offer Scribe").icon(icon).panel(panel).priority(8).build();
         toolbar.addNavigation(navigationButton);
         overlayManager.add(recommendationOverlay);
         panel.setSuggestionControls(this::setRiskLevel, this::skipSuggestion);
         inputAssistant.start();
-        dashboardSync.start(panel::showSyncStatus);
+        webhookClient.start(dataDirectory, panel::showSyncStatus);
         ledgerPersistence.load(events -> clientThread.invokeLater(() -> {
             for (TradeEvent event : events) if (ledger.append(event)) {
                 positions.apply(event); panel.addFill(event,itemCatalog.name(event.getItemId()),ledger.size());
-                dashboardSync.enqueue(event);
             }
             panel.setEventCount(ledger.size());
             rankCurrentUniverse();
@@ -94,7 +95,7 @@ public final class OfferScribePlugin extends Plugin {
         overlayManager.remove(recommendationOverlay);
         recommendationOverlay.clear();
         inputAssistant.stop();
-        dashboardSync.stop();
+        webhookClient.stop();
         requestedMarketItem = -1;
         prior.clear();
     }
@@ -105,7 +106,7 @@ public final class OfferScribePlugin extends Plugin {
         OfferSnapshot previous = prior.put(event.getSlot(), current);
         detector.detect(previous, current, TradeEvent.Source.LIVE_EVENT, profileId(), installation, session, VERSION)
             .ifPresent(fill -> { if (ledger.append(fill)) { positions.apply(fill); panel.addFill(fill,
-                itemCatalog.name(fill.getItemId()), ledger.size()); dashboardSync.enqueue(fill);
+                itemCatalog.name(fill.getItemId()), ledger.size()); webhookClient.enqueue(fill, itemCatalog.name(fill.getItemId()));
                 ledgerPersistence.save(ledger.events()); } });
         advanceGuidance(current);
     }
@@ -120,7 +121,7 @@ public final class OfferScribePlugin extends Plugin {
     }
 
     @Subscribe public void onGameTick(GameTick tick) {
-        dashboardSync.tick();
+        webhookClient.tick();
         if (!config.marketDataEnabled()) {
             recommendationOverlay.clear();
             inputAssistant.clear();

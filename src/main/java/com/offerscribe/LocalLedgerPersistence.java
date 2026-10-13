@@ -14,10 +14,11 @@ import okhttp3.OkHttpClient;
 /** Atomic local event persistence. Disk work always runs off the client thread. */
 @Singleton
 final class LocalLedgerPersistence {
-    private final Gson gson; private final OkHttpClient http; private final Filepath file; private long version;
-    @Inject LocalLedgerPersistence(Gson gson, OkHttpClient http, Filepath dataDirectory) {
-        this.gson=gson;this.http=http;this.file=dataDirectory.join("trade-events.json");
+    private final Gson gson; private final OkHttpClient http; private Filepath file; private long version;
+    @Inject LocalLedgerPersistence(Gson gson, OkHttpClient http) {
+        this.gson=gson;this.http=http;
     }
+    void setDataDirectory(Filepath dataDirectory) { this.file=dataDirectory.join("trade-events.json"); }
     void load(Consumer<List<TradeEvent>> success) { http.dispatcher().executorService().execute(() -> {
         List<TradeEvent> result=Collections.emptyList();
         if(file.exists())try{TradeEvent[] values=gson.fromJson(file.openReader(),TradeEvent[].class);if(values!=null)result=Arrays.asList(values);}catch(IOException|RuntimeException ignored){}

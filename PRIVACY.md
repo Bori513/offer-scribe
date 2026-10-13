@@ -13,9 +13,10 @@ to available cash. Coin counts remain local. It does not read or send player
 names, chat, friends, bank contents, unrelated inventory contents, credentials,
 hardware identifiers, or game/Jagex session tokens.
 
-Optional dashboard synchronization is disabled by default. When enabled and
-paired, it sends pseudonymous installation/profile/session IDs and immutable GE
-fill facts: time, slot, item ID, side, price, quantity and coin deltas,
-cumulative totals, offer state, source, tax-rule version and plugin version.
-The configured server necessarily receives the user's IP address. No dashboard
-endpoint can control RuneLite.
+Optional API export is disabled by default. When enabled, it sends one outbound
+JSON request for each newly observed GE fill to the webhook URL selected by the
+user. The disclosed fields are schema version, deterministic event ID, side,
+item ID, public item name, filled quantity, unit price, total coins and event
+time. The configured server necessarily receives the user's IP address. The
+integration accepts no inbound commands and cannot control RuneLite. Failed
+deliveries are retained in a local queue and retried.

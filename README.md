@@ -17,7 +17,7 @@ actions. Every game action remains the player's choice.
 - Guided highlights for buy, collect, sell, and collect-proceeds stages
 - Passive in-game prompts showing the exact quantity or price to enter manually
 - Local observed-offer and fill history
-- Optional paired synchronization to a self-hosted, read-only dashboard
+- Optional GE fill export to a user-configured HTTP(S) webhook
 
 Recommendations are estimates, not guarantees. Market prices can change before
 an offer completes.
@@ -35,10 +35,39 @@ does not read or transmit names, chat, friends, bank contents, unrelated
 inventory contents, credentials, hardware identifiers, or Jagex session data.
 There is no telemetry.
 
-Dashboard synchronization is a separate explicit opt-in. It sends only the
-documented pseudonymous immutable GE fill fields to the HTTPS API configured by
-the user. The local queue survives restarts and retries with backoff. The
-dashboard cannot submit or otherwise control game actions.
+API export is a separate explicit opt-in. It sends only the documented GE fill
+fields to the complete webhook URL configured by the user. Remote endpoints
+must use HTTPS; loopback endpoints may use HTTP. The local queue survives
+restarts and retries with backoff. This is an outbound-only integration: the
+receiver cannot submit or otherwise control game actions.
+
+PixelDisplaySim works without an adapter by using its local endpoint:
+
+```text
+http://127.0.0.1:8765/api/v1/ge_update/
+```
+
+Any other application can implement the same JSON webhook contract. Offer
+Scribe sends one `POST` per observed fill with `Content-Type: application/json`:
+
+```json
+{
+  "schema_version": 1,
+  "event_id": "6c5501aa-30ba-3f3d-a1b8-3c17fb85fdd2",
+  "side": "buy",
+  "item_id": 383,
+  "name": "Raw shark",
+  "quantity": 1000,
+  "unit_price": 912,
+  "total_coins": 912000,
+  "occurred_at": 1791763200
+}
+```
+
+The receiver should return any `2xx` response after accepting the event and
+deduplicate retries by `event_id`. Only newly observed fills are exported;
+loading local history does not resend it. The receiver should treat all fields
+as untrusted.
 
 ## Development
 
