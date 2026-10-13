@@ -39,6 +39,7 @@ public final class OfferScribePlugin extends Plugin {
     @Inject private GeRecommendationOverlay recommendationOverlay;
     @Inject private WikiMarketDataClient marketData;
     @Inject private GeInputAssistant inputAssistant;
+    @Inject private GeItemSearchAssistant itemSearchAssistant;
     @Inject private ItemCatalog itemCatalog;
     @Inject private FillWebhookClient webhookClient;
     @Inject private LocalLedgerPersistence ledgerPersistence;
@@ -95,6 +96,7 @@ public final class OfferScribePlugin extends Plugin {
         overlayManager.remove(recommendationOverlay);
         recommendationOverlay.clear();
         inputAssistant.stop();
+        itemSearchAssistant.clear();
         webhookClient.stop();
         requestedMarketItem = -1;
         prior.clear();
@@ -125,6 +127,7 @@ public final class OfferScribePlugin extends Plugin {
         if (!config.marketDataEnabled()) {
             recommendationOverlay.clear();
             inputAssistant.clear();
+            itemSearchAssistant.clear();
             activeOpportunity = null;
             rankedOpportunities = Collections.emptyList();
             panel.showActiveOpportunity(null, riskLevel);
@@ -173,6 +176,7 @@ public final class OfferScribePlugin extends Plugin {
     }
     @Subscribe public void onVarClientIntChanged(VarClientIntChanged event) {
         inputAssistant.onVarClientIntChanged(event);
+        itemSearchAssistant.onVarClientIntChanged(event);
     }
 
     private void refreshOpportunities() {
@@ -245,6 +249,7 @@ public final class OfferScribePlugin extends Plugin {
         panel.showActiveOpportunity(activeOpportunity, riskLevel);
         recommendationOverlay.showOpportunity(activeOpportunity);
         recommendationOverlay.showPhase(guidedPhase, activeSlot, guidedQuantity);
+        itemSearchAssistant.setOpportunity(activeOpportunity);
         if (activeOpportunity == null) inputAssistant.clear();
         else applyActiveRecommendation(activeOpportunity);
     }
