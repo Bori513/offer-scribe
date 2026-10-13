@@ -119,11 +119,12 @@ public final class OfferScribePlugin extends Plugin {
         long coins = inventory.count(ItemID.COINS_995);
         if (coins == availableCoins) return;
         availableCoins = coins;
-        rankCurrentUniverse();
+        if (activeOpportunity == null || guidedPhase == GeRecommendationOverlay.GuidedPhase.BUY && activeSlot < 0) rankCurrentUniverse();
     }
 
     @Subscribe public void onGameTick(GameTick tick) {
         webhookClient.tick();
+        itemSearchAssistant.tick();
         if (!config.marketDataEnabled()) {
             recommendationOverlay.clear();
             inputAssistant.clear();
@@ -209,10 +210,12 @@ public final class OfferScribePlugin extends Plugin {
             allowMembers, 50, Instant.now());
         panel.showOpportunities(rankedOpportunities.subList(0, Math.min(10, rankedOpportunities.size())));
         panel.showAvailableCash(availableCoins);
+        if (activeOpportunity != null && (activeSlot >= 0 || guidedPhase != GeRecommendationOverlay.GuidedPhase.BUY)) return;
         suggestionIndex = 0;
         for (Opportunity value : rankedOpportunities) {
             long open = positions.openQuantity(value.itemId);
-            if (open > 0) { activateOpenPosition(value, (int)Math.min(Integer.MAX_VALUE, open)); return; }
+            int held = inventoryQuantity(value.itemId);
+            if (open > 0 && held > 0) { activateOpenPosition(value, (int)Math.min(Math.min(Integer.MAX_VALUE, open), held)); return; }
         }
         selectActiveSuggestion();
     }
@@ -223,6 +226,11 @@ public final class OfferScribePlugin extends Plugin {
         panel.showActiveOpportunity(value,riskLevel); panel.showGuidedPhase(value,guidedPhase,guidedQuantity);
         recommendationOverlay.showOpportunity(value); recommendationOverlay.showPhase(guidedPhase,activeSlot,guidedQuantity);
         applyActiveRecommendation(value);
+    }
+
+    private int inventoryQuantity(int itemId) {
+        ItemContainer inventory = client.getItemContainer(InventoryID.INVENTORY);
+        return inventory == null ? 0 : inventory.count(itemId);
     }
 
     private void setRiskLevel(String value) {

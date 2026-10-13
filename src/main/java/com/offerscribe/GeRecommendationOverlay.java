@@ -9,6 +9,7 @@ import net.runelite.api.Client;
 import net.runelite.api.GrandExchangeOffer;
 import net.runelite.api.GrandExchangeOfferState;
 import net.runelite.api.VarPlayer;
+import net.runelite.api.WorldType;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.VarbitID;
 import net.runelite.api.widgets.Widget;
@@ -83,8 +84,18 @@ final class GeRecommendationOverlay extends Overlay {
         }
         int selectedSlot = client.getVarbitValue(VarbitID.GE_SELECTEDSLOT) - 1;
         if (selectedSlot < 0) {
+            if (phase == GuidedPhase.SELL) {
+                Widget inventory = client.getWidget(ComponentID.INVENTORY_CONTAINER);
+                if (inventory != null && inventory.getDynamicChildren() != null) {
+                    for (Widget child : inventory.getDynamicChildren()) {
+                        if (child != null && child.getItemId() == active.itemId && outline(graphics, child, null)) return true;
+                    }
+                }
+                return false;
+            }
             GrandExchangeOffer[] offers = client.getGrandExchangeOffers();
-            for (int slot = 0; slot < offers.length; slot++) {
+            int usableSlots = client.getWorldType().contains(WorldType.MEMBERS) ? 8 : 3;
+            for (int slot = 0; slot < Math.min(usableSlots, offers.length); slot++) {
                 if (offers[slot] != null && offers[slot].getState() == GrandExchangeOfferState.EMPTY) {
                     Widget slotWidget = client.getWidget(InterfaceID.GE_OFFERS, 7 + slot);
                     int child = phase == GuidedPhase.SELL ? 1 : 0;
@@ -106,7 +117,7 @@ final class GeRecommendationOverlay extends Overlay {
         }
         int quantity = client.getVarbitValue(VarbitID.GE_NEWOFFER_QUANTITY);
         int desiredQuantity = targetQuantity > 0 ? targetQuantity : active.quantity;
-        if (quantity != desiredQuantity) return outline(graphics, container.getChild(51), new Rectangle(1, 6, 33, 23));
+        if (phase != GuidedPhase.SELL && quantity != desiredQuantity) return outline(graphics, container.getChild(51), new Rectangle(1, 6, 33, 23));
         long price = client.getVarpLongValue(GE_SETUP_PRICE_VARP);
         long targetPrice = phase == GuidedPhase.SELL ? active.sellPrice : active.buyPrice;
         if (price != targetPrice) return outline(graphics, container.getChild(54), new Rectangle(1, 6, 33, 23));
