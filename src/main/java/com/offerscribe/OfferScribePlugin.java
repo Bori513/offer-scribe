@@ -241,12 +241,12 @@ public final class OfferScribePlugin extends Plugin {
                 usingRecommendationService = true;
                 availableCoins = inventoryCoins();
                 inventoryInitialized = true;
-                panel.showRecommendationSource("Recommendation service");
+                panel.showRecommendationSource("Service");
                 rankCurrentUniverse();
             }), message -> clientThread.invokeLater(() -> {
                 if (generation != opportunityRequestGeneration) return;
                 if (config.recommendationSource() == RecommendationSource.SERVICE_WITH_WIKI_FALLBACK) {
-                    panel.showRecommendationSource("Service unavailable · using Wiki");
+                    panel.showRecommendationSource("Wiki fallback");
                     fetchWikiOpportunities(generation);
                 } else {
                     opportunityRequestPending = false;
@@ -277,7 +277,7 @@ public final class OfferScribePlugin extends Plugin {
                 itemCatalog.update(items);
                 availableCoins = inventoryCoins();
                 inventoryInitialized = true;
-                panel.showRecommendationSource("OSRS Wiki ranking");
+                panel.showRecommendationSource("OSRS Wiki");
                 rankCurrentUniverse();
             });
         }, message -> {
@@ -472,8 +472,8 @@ public final class OfferScribePlugin extends Plugin {
             selling ? value.sellPrice : value.buyPrice,
             guidedQuantity > 0 ? guidedQuantity : value.quantity, value.profitPerItem, value.roi, value.dataTimestamp,
             usingRecommendationService
-                ? "Configured recommendation service; locally validated against tax, cash, membership, blocks, and open offers"
-                : "OSRS Wiki prices and hourly volume; tax, budget, buy limit, freshness, and stability adjusted");
+                ? "Service data; locally validated"
+                : "OSRS Wiki; tax and liquidity adjusted");
         recommendationOverlay.show(recommendation);
         inputAssistant.setRecommendation(recommendation);
         panel.showRecommendation(recommendation);
