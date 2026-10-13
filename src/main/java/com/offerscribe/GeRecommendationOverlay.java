@@ -85,13 +85,7 @@ final class GeRecommendationOverlay extends Overlay {
         int selectedSlot = client.getVarbitValue(VarbitID.GE_SELECTEDSLOT) - 1;
         if (selectedSlot < 0) {
             if (phase == GuidedPhase.SELL) {
-                Widget inventory = client.getWidget(ComponentID.INVENTORY_CONTAINER);
-                if (inventory != null && inventory.getDynamicChildren() != null) {
-                    for (Widget child : inventory.getDynamicChildren()) {
-                        if (child != null && child.getItemId() == active.itemId && outline(graphics, child, null)) return true;
-                    }
-                }
-                return false;
+                return outlineInventoryItem(graphics, active.itemId);
             }
             GrandExchangeOffer[] offers = client.getGrandExchangeOffers();
             int usableSlots = client.getWorldType().contains(WorldType.MEMBERS) ? 8 : 3;
@@ -133,5 +127,22 @@ final class GeRecommendationOverlay extends Overlay {
         graphics.setStroke(new BasicStroke(3f));
         graphics.drawRoundRect(bounds.x, bounds.y, Math.max(1, bounds.width), Math.max(1, bounds.height), 8, 8);
         return true;
+    }
+
+    private boolean outlineInventoryItem(Graphics2D graphics, int itemId) {
+        int[] containers = {
+            ComponentID.GRAND_EXCHANGE_INVENTORY_INVENTORY_ITEM_CONTAINER,
+            ComponentID.INVENTORY_CONTAINER
+        };
+        for (int component : containers) {
+            Widget inventory = client.getWidget(component);
+            if (inventory == null) continue;
+            Widget[] children = inventory.getNestedChildren();
+            if (children == null) continue;
+            for (Widget child : children) {
+                if (child != null && child.getItemId() == itemId && outline(graphics, child, null)) return true;
+            }
+        }
+        return false;
     }
 }
