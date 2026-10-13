@@ -9,6 +9,8 @@ import java.time.Duration;
 import java.util.*;
 import javax.inject.Inject;
 import net.runelite.api.Client;
+import net.runelite.api.GrandExchangeOffer;
+import net.runelite.api.GrandExchangeOfferState;
 import net.runelite.api.InventoryID;
 import net.runelite.api.ItemContainer;
 import net.runelite.api.ItemID;
@@ -71,6 +73,7 @@ public final class OfferScribePlugin extends Plugin {
     private long availableCoins;
     private boolean inventoryInitialized;
     private boolean startupRecoveryPending;
+    private boolean guidanceRefreshPending;
 
     @Provides OfferScribeConfig config(ConfigManager manager) { return manager.getConfig(OfferScribeConfig.class); }
     @Override protected void startUp() throws Exception {
@@ -133,6 +136,10 @@ public final class OfferScribePlugin extends Plugin {
 
     @Subscribe public void onGameTick(GameTick tick) {
         webhookClient.tick();
+        if (guidanceRefreshPending) {
+            guidanceRefreshPending = false;
+            rankCurrentUniverse();
+        }
         if (!inventoryInitialized) {
             ItemContainer inventory = client.getItemContainer(InventoryID.INVENTORY);
             if (inventory != null) {
@@ -303,10 +310,12 @@ public final class OfferScribePlugin extends Plugin {
 
     private void selectActiveSuggestion() {
         List<Opportunity> eligible = new ArrayList<>();
+        Set<Integer> itemsAlreadyBuying = openBuyItemIds();
         for (Opportunity value : rankedOpportunities) {
-            if (isEligibleRisk(value.risk)) eligible.add(value);
+            if (isEligibleRisk(value.risk) && !itemsAlreadyBuying.contains(value.itemId)) eligible.add(value);
         }
-        activeOpportunity = eligible.isEmpty() ? null : eligible.get(Math.floorMod(suggestionIndex, eligible.size()));
+        activeOpportunity = eligible.isEmpty() || !hasEmptyOfferSlot()
+            ? null : eligible.get(Math.floorMod(suggestionIndex, eligible.size()));
         guidedPhase = GeRecommendationOverlay.GuidedPhase.BUY;
         activeSlot = -1;
         guidedQuantity = activeOpportunity == null ? 0 : activeOpportunity.quantity;
@@ -317,6 +326,25 @@ public final class OfferScribePlugin extends Plugin {
         itemSearchAssistant.setOpportunity(activeOpportunity);
         if (activeOpportunity == null) inputAssistant.clear();
         else applyActiveRecommendation(activeOpportunity);
+    }
+
+    private Set<Integer> openBuyItemIds() {
+        Set<Integer> result = new HashSet<>();
+        for (GrandExchangeOffer offer : client.getGrandExchangeOffers()) {
+            if (offer == null) continue;
+            GrandExchangeOfferState state = offer.getState();
+            if (state == GrandExchangeOfferState.BUYING || state.name().equals("PENDING_BUY")) result.add(offer.getItemId());
+        }
+        return result;
+    }
+
+    private boolean hasEmptyOfferSlot() {
+        GrandExchangeOffer[] offers = client.getGrandExchangeOffers();
+        int usable = client.getWorldType().contains(WorldType.MEMBERS) ? 8 : 3;
+        for (int slot = 0; slot < Math.min(usable, offers.length); slot++) {
+            if (offers[slot] != null && offers[slot].getState() == GrandExchangeOfferState.EMPTY) return true;
+        }
+        return false;
     }
 
     private boolean isEligibleRisk(String risk) {
@@ -340,6 +368,25 @@ public final class OfferScribePlugin extends Plugin {
     }
 
     private void advanceGuidance(OfferSnapshot offer) {
+        if (offer.getState() == OfferSnapshot.State.EMPTY && activeOpportunity == null) {
+            selectNextBuySuggestion();
+            return;
+        }
+        if (offer.getState() == OfferSnapshot.State.CANCELLED && offer.getFilledQuantity() == 0) {
+            selectNextBuySuggestion();
+            return;
+        }
+        if (offer.getSide() == OfferSnapshot.Side.BUY
+            && (offer.getState() == OfferSnapshot.State.COMPLETED || offer.getState() == OfferSnapshot.State.CANCELLED)
+            && offer.getFilledQuantity() > 0) {
+            if (activateCompletedOffer(offer, GeRecommendationOverlay.GuidedPhase.COLLECT_BUY,
+                offer.getFilledQuantity())) return;
+        }
+        if (offer.getSide() == OfferSnapshot.Side.SELL
+            && (offer.getState() == OfferSnapshot.State.COMPLETED || offer.getState() == OfferSnapshot.State.CANCELLED)) {
+            if (activateCompletedOffer(offer, GeRecommendationOverlay.GuidedPhase.COLLECT_SELL,
+                offer.getTotalQuantity() - offer.getFilledQuantity())) return;
+        }
         if (activeOpportunity == null) return;
         if (offer.getItemId() == activeOpportunity.itemId) {
             activeSlot = offer.getSlot();
@@ -348,13 +395,19 @@ public final class OfferScribePlugin extends Plugin {
                 if (offer.getState() == OfferSnapshot.State.COMPLETED || offer.getState() == OfferSnapshot.State.CANCELLED) {
                     quantityAfterCollection = offer.getFilledQuantity();
                     guidedPhase = GeRecommendationOverlay.GuidedPhase.COLLECT_BUY;
-                } else guidedPhase = GeRecommendationOverlay.GuidedPhase.WAIT_BUY;
+                } else {
+                    selectNextBuySuggestion();
+                    return;
+                }
             } else {
                 guidedQuantity = offer.getTotalQuantity();
                 if (offer.getState() == OfferSnapshot.State.COMPLETED || offer.getState() == OfferSnapshot.State.CANCELLED) {
                     quantityAfterCollection = offer.getTotalQuantity() - offer.getFilledQuantity();
                     guidedPhase = GeRecommendationOverlay.GuidedPhase.COLLECT_SELL;
-                } else guidedPhase = GeRecommendationOverlay.GuidedPhase.WAIT_SELL;
+                } else {
+                    selectNextBuySuggestion();
+                    return;
+                }
             }
         } else if (offer.getState() == OfferSnapshot.State.EMPTY && offer.getSlot() == activeSlot) {
             if (guidedPhase == GeRecommendationOverlay.GuidedPhase.COLLECT_BUY) {
@@ -378,6 +431,53 @@ public final class OfferScribePlugin extends Plugin {
         } else return;
         recommendationOverlay.showPhase(guidedPhase, activeSlot, guidedQuantity);
         panel.showGuidedPhase(activeOpportunity, guidedPhase, guidedQuantity);
+    }
+
+    private boolean activateCompletedOffer(OfferSnapshot offer, GeRecommendationOverlay.GuidedPhase phase,
+        int quantityAfterCollection) {
+        Opportunity completed = opportunityForItem(offer.getItemId(), Math.max(1, offer.getFilledQuantity()));
+        if (completed == null) return false;
+        activeOpportunity = completed;
+        activeSlot = offer.getSlot();
+        guidedQuantity = offer.getFilledQuantity();
+        this.quantityAfterCollection = quantityAfterCollection;
+        guidedPhase = phase;
+        itemSearchAssistant.setOpportunity(completed);
+        recommendationOverlay.showOpportunity(completed);
+        recommendationOverlay.showPhase(guidedPhase, activeSlot, guidedQuantity);
+        panel.showActiveOpportunity(completed, riskLevel);
+        panel.showGuidedPhase(completed, guidedPhase, guidedQuantity);
+        applyActiveRecommendation(completed);
+        return true;
+    }
+
+    private void selectNextBuySuggestion() {
+        activeOpportunity = null;
+        activeSlot = -1;
+        guidedPhase = GeRecommendationOverlay.GuidedPhase.BUY;
+        suggestionIndex = 0;
+        guidedQuantity = 0;
+        quantityAfterCollection = 0;
+        panel.showActiveOpportunity(null, riskLevel);
+        recommendationOverlay.showOpportunity(null);
+        recommendationOverlay.showPhase(guidedPhase, activeSlot, guidedQuantity);
+        inputAssistant.clear();
+        itemSearchAssistant.clear();
+        guidanceRefreshPending = true;
+    }
+
+    private Opportunity opportunityForItem(int itemId, int quantity) {
+        for (MarketItemSnapshot item : marketUniverse) {
+            if (item.itemId != itemId || item.high <= 0 || item.low <= 0) continue;
+            long tax = GeTaxCalculator.taxPerItem(item.high);
+            long profit = item.high - item.low - tax;
+            long volume = Math.min(item.highVolume, item.lowVolume);
+            Instant timestamp = item.highTime.isBefore(item.lowTime) ? item.highTime : item.lowTime;
+            return new Opportunity(item.itemId, item.name, item.low, item.high, Math.max(1, quantity),
+                tax, profit, profit * Math.max(1, quantity), item.low <= 0 ? 0 : (double)profit / item.low,
+                volume, timestamp, "OPEN POSITION", Double.MAX_VALUE);
+        }
+        return null;
     }
     private String profileId() { return "local-" + Integer.toUnsignedString(Objects.hash(client.getAccountHash()), 36); }
 }
