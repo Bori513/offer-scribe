@@ -120,15 +120,19 @@ public final class OfferScribePlugin extends Plugin {
         ItemContainer inventory = client.getItemContainer(InventoryID.INVENTORY);
         if (inventory == null || event.getItemContainer() != inventory) return;
         long coins = inventory.count(ItemID.COINS_995);
-        if (coins == availableCoins) return;
+        boolean cashChanged = coins != availableCoins;
         availableCoins = coins;
         inventoryInitialized = true;
-        if (activeOpportunity == null || guidedPhase == GeRecommendationOverlay.GuidedPhase.BUY && activeSlot < 0) rankCurrentUniverse();
+        // Collection usually changes items without changing coins. Re-evaluate open ledger
+        // positions on every inventory update so a collected buy immediately becomes SELL.
+        if (cashChanged || startupRecoveryPending || hasHeldOpenPosition()
+            || activeOpportunity == null || guidedPhase == GeRecommendationOverlay.GuidedPhase.BUY && activeSlot < 0) {
+            rankCurrentUniverse();
+        }
     }
 
     @Subscribe public void onGameTick(GameTick tick) {
         webhookClient.tick();
-        itemSearchAssistant.tick();
         if (!inventoryInitialized) {
             ItemContainer inventory = client.getItemContainer(InventoryID.INVENTORY);
             if (inventory != null) {
@@ -227,23 +231,22 @@ public final class OfferScribePlugin extends Plugin {
             allowMembers, 50, Instant.now());
         panel.showOpportunities(rankedOpportunities.subList(0, Math.min(10, rankedOpportunities.size())));
         panel.showAvailableCash(availableCoins);
-        if (startupRecoveryPending && inventoryInitialized) {
-            Opportunity recovery = recoverHeldPosition();
-            startupRecoveryPending = false;
-            if (recovery != null) {
-                long open = positions.openQuantity(recovery.itemId);
-                activateOpenPosition(recovery, (int)Math.min(Math.min(Integer.MAX_VALUE, open), inventoryQuantity(recovery.itemId)));
-                return;
-            }
-        }
-        if (activeOpportunity != null && (activeSlot >= 0 || guidedPhase != GeRecommendationOverlay.GuidedPhase.BUY)) return;
-        suggestionIndex = 0;
+        // Inventory and the persisted ledger become available independently during login.
+        // Always prefer a held, unsold position once both are visible; a temporary BUY
+        // suggestion must never prevent recovery on the next inventory update.
         Opportunity recovery = recoverHeldPosition();
         if (recovery != null) {
+            startupRecoveryPending = false;
+            if (activeOpportunity != null && activeOpportunity.itemId == recovery.itemId
+                && guidedPhase != GeRecommendationOverlay.GuidedPhase.BUY) return;
             long open = positions.openQuantity(recovery.itemId);
             activateOpenPosition(recovery, (int)Math.min(Math.min(Integer.MAX_VALUE, open), inventoryQuantity(recovery.itemId)));
             return;
         }
+        if (startupRecoveryPending && !inventoryInitialized) return;
+        startupRecoveryPending = false;
+        if (activeOpportunity != null && (activeSlot >= 0 || guidedPhase != GeRecommendationOverlay.GuidedPhase.BUY)) return;
+        suggestionIndex = 0;
         selectActiveSuggestion();
     }
 
@@ -267,11 +270,17 @@ public final class OfferScribePlugin extends Plugin {
             volume, timestamp, "OPEN POSITION", Double.MAX_VALUE);
     }
 
+    private boolean hasHeldOpenPosition() {
+        for (int itemId : positions.openItemIds()) if (inventoryQuantity(itemId) > 0) return true;
+        return false;
+    }
+
     private void activateOpenPosition(Opportunity value, int quantity) {
         activeOpportunity=value; guidedPhase=GeRecommendationOverlay.GuidedPhase.SELL;
         guidedQuantity=quantity; quantityAfterCollection=0; activeSlot=-1;
         panel.showActiveOpportunity(value,riskLevel); panel.showGuidedPhase(value,guidedPhase,guidedQuantity);
         recommendationOverlay.showOpportunity(value); recommendationOverlay.showPhase(guidedPhase,activeSlot,guidedQuantity);
+        itemSearchAssistant.setOpportunity(value);
         applyActiveRecommendation(value);
     }
 
@@ -283,10 +292,11 @@ public final class OfferScribePlugin extends Plugin {
     private void setRiskLevel(String value) {
         riskLevel = value;
         suggestionIndex = 0;
-        selectActiveSuggestion();
+        rankCurrentUniverse();
     }
 
     private void skipSuggestion() {
+        if (activeOpportunity != null && guidedPhase != GeRecommendationOverlay.GuidedPhase.BUY) return;
         suggestionIndex++;
         selectActiveSuggestion();
     }

@@ -130,19 +130,22 @@ final class GeRecommendationOverlay extends Overlay {
     }
 
     private boolean outlineInventoryItem(Graphics2D graphics, int itemId) {
-        int[] containers = {
-            ComponentID.GRAND_EXCHANGE_INVENTORY_INVENTORY_ITEM_CONTAINER,
-            ComponentID.INVENTORY_CONTAINER
-        };
-        for (int component : containers) {
-            Widget inventory = client.getWidget(component);
-            if (inventory == null) continue;
-            Widget[] children = inventory.getNestedChildren();
-            if (children == null) continue;
-            for (Widget child : children) {
-                if (child != null && child.getItemId() == itemId && outline(graphics, child, null)) return true;
+        // Match Copilot's GE-specific inventory lookup. The normal inventory widget can
+        // remain present behind the GE and points at unusable screen coordinates.
+        Widget inventory = client.getWidget(ComponentID.GRAND_EXCHANGE_INVENTORY_INVENTORY_ITEM_CONTAINER);
+        if (inventory == null) return false;
+        Widget[] children = inventory.getDynamicChildren();
+        if (children == null) return false;
+        Widget unnoted = null;
+        for (Widget child : children) {
+            if (child == null || child.isHidden() || child.getItemQuantity() <= 0) continue;
+            int childId = child.getItemId();
+            net.runelite.api.ItemComposition definition = client.getItemDefinition(childId);
+            if (definition.getNote() != -1 && definition.getLinkedNoteId() == itemId) {
+                return outline(graphics, child, new Rectangle(0, 0, 34, 32));
             }
+            if (childId == itemId) unnoted = child;
         }
-        return false;
+        return outline(graphics, unnoted, new Rectangle(0, 0, 34, 32));
     }
 }
