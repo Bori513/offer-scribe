@@ -56,7 +56,7 @@ Hub build. No third-party runtime dependencies are required.
 4. Fork `runelite/plugin-hub` and add `plugins/offer-scribe`:
 
    ```properties
-   repository=https://github.com/YOUR_GITHUB_USERNAME/offer-scribe.git
+   repository=https://github.com/Bori513/offer-scribe.git
    commit=YOUR_40_CHARACTER_COMMIT_HASH
    ```
 
