@@ -12,6 +12,7 @@ import java.util.List;
 import net.runelite.api.GrandExchangeOfferState;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
+import com.google.gson.Gson;
 
 class CoreTest {
     private OfferSnapshot snap(int filled,long coins,OfferSnapshot.Side side,Instant at) {
@@ -28,6 +29,16 @@ class CoreTest {
         assertEquals(0,GeTaxCalculator.taxPerItem(49)); assertEquals(1,GeTaxCalculator.taxPerItem(50));
         assertEquals(5_000_000,GeTaxCalculator.taxPerItem(300_000_000));
         assertEquals(10_000_000,GeTaxCalculator.tax(300_000_000,2));
+        assertEquals(5_000_000,GeTaxCalculator.taxPerItem(Long.MAX_VALUE));
+    }
+
+    @Test void validatesAndExpiresExternalRecommendations() {
+        Instant now=Instant.parse("2026-01-01T00:00:00Z");
+        String valid="{\"schema_version\":1,\"generated_at\":"+now.getEpochSecond()+",\"expires_in_seconds\":300,\"opportunities\":[{\"item_id\":453,\"buy_price\":138,\"sell_price\":142,\"max_quantity\":12000,\"risk\":\"LOW\",\"score\":94.2}]}";
+        assertEquals(1,ExternalRecommendationClient.parse(new Gson(),valid,now).size());
+        assertTrue(ExternalRecommendationClient.parse(new Gson(),valid,now.plusSeconds(301)).isEmpty());
+        String invalid="{\"schema_version\":1,\"generated_at\":"+now.getEpochSecond()+",\"expires_in_seconds\":300,\"opportunities\":[{\"item_id\":453,\"buy_price\":142,\"sell_price\":138,\"max_quantity\":1,\"score\":1}]}";
+        assertTrue(ExternalRecommendationClient.parse(new Gson(),invalid,now).isEmpty());
     }
     @Test void fifoRecordsProfitsAndLosses() {
         Instant t=Instant.parse("2026-01-01T00:00:00Z"); PositionEngine p=new PositionEngine();

@@ -20,4 +20,10 @@ public interface OfferScribeConfig extends Config {
     default boolean includeMembersItems() { return false; }
     @ConfigItem(keyName="quickSetKeybind", name="Legacy quick-set key", description="Retained for settings compatibility; values are now displayed for manual entry", hidden=true, position=7)
     default Keybind quickSetKeybind() { return new Keybind(KeyEvent.VK_E, 0); }
+    @ConfigItem(keyName="recommendationSource", name="Recommendation source", description="Use local Wiki ranking, a configurable service with Wiki fallback, or only the service", position=8)
+    default RecommendationSource recommendationSource() { return RecommendationSource.WIKI; }
+    @ConfigItem(keyName="recommendationServiceUrl", name="Recommendation service URL", description="Read-only GET endpoint returning the documented opportunity schema. No player state is sent. Remote endpoints must use HTTPS; loopback may use HTTP.", warning="This feature connects to a 3rd-party server not controlled or verified by RuneLite developers. The server receives your IP address.", position=9)
+    default String recommendationServiceUrl() { return "http://127.0.0.1:8765/api/v1/ge_recommendations/"; }
+    @ConfigItem(keyName="blockedItemIds", name="Blocked item IDs", description="Comma-separated item IDs excluded from all recommendation sources. Bonds are blocked by default.", position=10)
+    default String blockedItemIds() { return "13190,13192"; }
 }

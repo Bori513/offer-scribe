@@ -6,11 +6,11 @@ public final class GeTaxCalculator {
     private GeTaxCalculator() {}
     public static long taxPerItem(long salePrice) {
         if (salePrice < 0) throw new IllegalArgumentException("negative price");
-        return Math.min(CAP_PER_ITEM, salePrice * 2 / 100);
+        long percent = salePrice / 100 * 2 + salePrice % 100 * 2 / 100;
+        return Math.min(CAP_PER_ITEM, percent);
     }
     public static long tax(long salePrice, long quantity) {
         if (quantity < 0) throw new IllegalArgumentException("negative quantity");
         return Math.multiplyExact(taxPerItem(salePrice), quantity);
     }
 }
-

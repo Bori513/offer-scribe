@@ -18,6 +18,8 @@ actions. Every game action remains the player's choice.
 - Passive in-game prompts showing the exact quantity or price to enter manually
 - Local observed-offer and fill history
 - Optional GE fill export to a user-configured HTTP(S) webhook
+- Optional read-only recommendation service with automatic Wiki fallback
+- Persistent local item blocklist (Bonds are excluded by default)
 
 Recommendations are estimates, not guarantees. Market prices can change before
 an offer completes.
@@ -68,6 +70,38 @@ The receiver should return any `2xx` response after accepting the event and
 deduplicate retries by `event_id`. Only newly observed fills are exported;
 loading local history does not resend it. The receiver should treat all fields
 as untrusted.
+
+## Recommendation service API
+
+The recommendation source can be set to local Wiki ranking, service-only, or
+service with Wiki fallback. The plugin makes an unauthenticated `GET` to the
+configured URL with no query parameters or player state. Remote URLs must use
+HTTPS; loopback URLs may use HTTP.
+
+```json
+{
+  "schema_version": 1,
+  "generated_at": 1791763200,
+  "expires_in_seconds": 300,
+  "opportunities": [
+    {
+      "item_id": 453,
+      "buy_price": 138,
+      "sell_price": 142,
+      "max_quantity": 12000,
+      "risk": "LOW",
+      "score": 94.2
+    }
+  ]
+}
+```
+
+Responses are treated as untrusted. Offer Scribe rejects expired, malformed,
+untradeable, members-only (when inappropriate), locally blocked, duplicate,
+unprofitable, unaffordable, and overflow-producing opportunities. It sizes the
+final quantity against the visible coin stack. The service provides guidance
+only and cannot submit or control game actions. In fallback mode, any network,
+HTTP, schema, expiry, or empty-result failure returns to local Wiki ranking.
 
 ## Development
 

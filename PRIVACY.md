@@ -20,3 +20,11 @@ item ID, public item name, filled quantity, unit price, total coins and event
 time. The configured server necessarily receives the user's IP address. The
 integration accepts no inbound commands and cannot control RuneLite. Failed
 deliveries are retained in a local queue and retried.
+
+An optional recommendation service is disabled by default because the default
+source is local Wiki ranking. When selected, the plugin performs an
+unauthenticated GET to the user-configured URL. It sends no player name,
+account identifier, inventory, coin count, open offers, fills, or query
+parameters. The server receives the requester's IP address as part of normal
+network operation and returns untrusted recommendation data. Returned data can
+only affect displayed guidance; it cannot cause game actions.

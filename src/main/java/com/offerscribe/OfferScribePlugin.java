@@ -23,6 +23,7 @@ import net.runelite.api.events.GrandExchangeOfferChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.VarClientIntChanged;
+import net.runelite.client.events.ConfigChanged;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.callback.ClientThread;
@@ -44,9 +45,11 @@ public final class OfferScribePlugin extends Plugin {
     @Inject private GeItemSearchAssistant itemSearchAssistant;
     @Inject private ItemCatalog itemCatalog;
     @Inject private FillWebhookClient webhookClient;
+    @Inject private ExternalRecommendationClient externalRecommendations;
     @Inject private LocalLedgerPersistence ledgerPersistence;
     @Inject private ClientThread clientThread;
     @Inject private OfferScribeConfig config;
+    @Inject private ConfigManager configManager;
     private final GeOfferObserver observer = new GeOfferObserver();
     private final FillDeltaDetector detector = new FillDeltaDetector();
     private final RecommendationEngine recommendations = new RecommendationEngine();
@@ -60,6 +63,7 @@ public final class OfferScribePlugin extends Plugin {
     private int requestedMarketItem = -1;
     private Instant lastOpportunityRequest = Instant.EPOCH;
     private boolean opportunityRequestPending;
+    private int opportunityRequestGeneration;
     private List<Opportunity> rankedOpportunities = Collections.emptyList();
     private String riskLevel = "MEDIUM";
     private int suggestionIndex;
@@ -70,6 +74,8 @@ public final class OfferScribePlugin extends Plugin {
     private int quantityAfterCollection;
     private Boolean lastMembersWorld;
     private List<MarketItemSnapshot> marketUniverse = Collections.emptyList();
+    private List<ExternalRecommendationClient.Candidate> serviceCandidates = Collections.emptyList();
+    private boolean usingRecommendationService;
     private long availableCoins;
     private boolean inventoryInitialized;
     private boolean startupRecoveryPending;
@@ -85,7 +91,7 @@ public final class OfferScribePlugin extends Plugin {
         navigationButton = NavigationButton.builder().tooltip("Offer Scribe").icon(icon).panel(panel).priority(8).build();
         toolbar.addNavigation(navigationButton);
         overlayManager.add(recommendationOverlay);
-        panel.setSuggestionControls(this::setRiskLevel, this::skipSuggestion);
+        panel.setSuggestionControls(this::setRiskLevel, this::skipSuggestion, this::blockSuggestion);
         inputAssistant.start();
         webhookClient.start(dataDirectory, panel::showSyncStatus);
         ledgerPersistence.load(events -> clientThread.invokeLater(() -> {
@@ -98,12 +104,14 @@ public final class OfferScribePlugin extends Plugin {
         }));
     }
     @Override protected void shutDown() {
+        opportunityRequestGeneration++;
         if (navigationButton != null) toolbar.removeNavigation(navigationButton);
         overlayManager.remove(recommendationOverlay);
         recommendationOverlay.clear();
         inputAssistant.stop();
         itemSearchAssistant.clear();
         webhookClient.stop();
+        externalRecommendations.stop();
         requestedMarketItem = -1;
         prior.clear();
     }
@@ -203,22 +211,78 @@ public final class OfferScribePlugin extends Plugin {
         itemSearchAssistant.onVarClientIntChanged(event);
     }
 
+    @Subscribe public void onConfigChanged(ConfigChanged event) {
+        if (!"offerscribe".equals(event.getGroup())) return;
+        if ("recommendationSource".equals(event.getKey()) || "recommendationServiceUrl".equals(event.getKey())
+            || "marketDataEnabled".equals(event.getKey())) {
+            lastOpportunityRequest = Instant.EPOCH;
+            refreshOpportunities();
+        } else if ("blockedItemIds".equals(event.getKey())) {
+            suggestionIndex = 0;
+            rankCurrentUniverse();
+        }
+    }
+
     private void refreshOpportunities() {
+        int generation = ++opportunityRequestGeneration;
+        if (!config.marketDataEnabled()) {
+            opportunityRequestPending = false;
+            return;
+        }
         opportunityRequestPending = true;
         lastOpportunityRequest = Instant.now();
         panel.showOpportunityLoading();
-        marketData.fetchUniverse(items -> {
-            clientThread.invokeLater(() -> {
+        if (config.recommendationSource() != RecommendationSource.WIKI) {
+            externalRecommendations.fetch(values -> clientThread.invokeLater(() -> {
+                if (generation != opportunityRequestGeneration) return;
                 opportunityRequestPending = false;
                 if (!config.marketDataEnabled()) return;
+                serviceCandidates = values;
+                usingRecommendationService = true;
+                availableCoins = inventoryCoins();
+                inventoryInitialized = true;
+                panel.showRecommendationSource("Recommendation service");
+                rankCurrentUniverse();
+            }), message -> clientThread.invokeLater(() -> {
+                if (generation != opportunityRequestGeneration) return;
+                if (config.recommendationSource() == RecommendationSource.SERVICE_WITH_WIKI_FALLBACK) {
+                    panel.showRecommendationSource("Service unavailable · using Wiki");
+                    fetchWikiOpportunities(generation);
+                } else {
+                    opportunityRequestPending = false;
+                    usingRecommendationService = false;
+                    serviceCandidates = Collections.emptyList();
+                    activeOpportunity = null;
+                    recommendationOverlay.clear();
+                    inputAssistant.clear();
+                    itemSearchAssistant.clear();
+                    panel.showOpportunityError(message);
+                    panel.showActiveOpportunity(null, riskLevel);
+                }
+            }));
+            return;
+        }
+        fetchWikiOpportunities(generation);
+    }
+
+    private void fetchWikiOpportunities(int generation) {
+        marketData.fetchUniverse(items -> {
+            clientThread.invokeLater(() -> {
+                if (generation != opportunityRequestGeneration) return;
+                opportunityRequestPending = false;
+                if (!config.marketDataEnabled()) return;
+                usingRecommendationService = false;
+                serviceCandidates = Collections.emptyList();
                 marketUniverse = items;
                 itemCatalog.update(items);
                 availableCoins = inventoryCoins();
                 inventoryInitialized = true;
+                panel.showRecommendationSource("OSRS Wiki ranking");
                 rankCurrentUniverse();
             });
         }, message -> {
             clientThread.invokeLater(() -> {
+                if (generation != opportunityRequestGeneration) return;
                 opportunityRequestPending = false;
                 panel.showOpportunityError(message);
             });
@@ -231,11 +295,15 @@ public final class OfferScribePlugin extends Plugin {
     }
 
     private void rankCurrentUniverse() {
-        if (marketUniverse.isEmpty() || panel == null) return;
+        if ((!usingRecommendationService && marketUniverse.isEmpty())
+            || (usingRecommendationService && serviceCandidates.isEmpty()) || panel == null) return;
         boolean allowMembers = config.includeMembersItems()
             && client.getWorldType().contains(WorldType.MEMBERS);
-        rankedOpportunities = opportunityEngine.rank(marketUniverse, availableCoins,
-            allowMembers, 50, Instant.now());
+        rankedOpportunities = usingRecommendationService
+            ? rankServiceCandidates(allowMembers)
+            : opportunityEngine.rank(marketUniverse, availableCoins, allowMembers, 50, Instant.now());
+        Set<Integer> blocked = blockedItemIds();
+        rankedOpportunities.removeIf(value -> blocked.contains(value.itemId));
         panel.showOpportunities(rankedOpportunities.subList(0, Math.min(10, rankedOpportunities.size())));
         panel.showAvailableCash(availableCoins);
         // Inventory and the persisted ledger become available independently during login.
@@ -258,23 +326,19 @@ public final class OfferScribePlugin extends Plugin {
     }
 
     private Opportunity recoverHeldPosition() {
-        MarketItemSnapshot selected = null;
+        Opportunity selected = null;
         Instant newest = Instant.EPOCH;
         Set<Integer> openIds = positions.openItemIds();
-        for (MarketItemSnapshot item : marketUniverse) {
-            if (!openIds.contains(item.itemId) || inventoryQuantity(item.itemId) <= 0 || item.high <= 0) continue;
-            Instant acquired = positions.latestOpenAt(item.itemId);
-            if (selected == null || acquired.isAfter(newest)) { selected = item; newest = acquired; }
+        for (int itemId : openIds) {
+            int quantity = (int)Math.min(Integer.MAX_VALUE,
+                Math.min(positions.openQuantity(itemId), inventoryQuantity(itemId)));
+            if (quantity <= 0) continue;
+            Opportunity opportunity = opportunityForItem(itemId, quantity);
+            if (opportunity == null) continue;
+            Instant acquired = positions.latestOpenAt(itemId);
+            if (selected == null || acquired.isAfter(newest)) { selected = opportunity; newest = acquired; }
         }
-        if (selected == null) return null;
-        int quantity = (int)Math.min(Integer.MAX_VALUE, Math.min(positions.openQuantity(selected.itemId), inventoryQuantity(selected.itemId)));
-        long tax = GeTaxCalculator.taxPerItem(selected.high);
-        long profit = selected.high - selected.low - tax;
-        long volume = Math.min(selected.highVolume, selected.lowVolume);
-        Instant timestamp = selected.highTime.isBefore(selected.lowTime) ? selected.highTime : selected.lowTime;
-        return new Opportunity(selected.itemId, selected.name, selected.low, selected.high, quantity,
-            tax, profit, profit * quantity, selected.low <= 0 ? 0 : (double)profit / selected.low,
-            volume, timestamp, "OPEN POSITION", Double.MAX_VALUE);
+        return selected;
     }
 
     private boolean hasHeldOpenPosition() {
@@ -306,6 +370,52 @@ public final class OfferScribePlugin extends Plugin {
         if (activeOpportunity != null && guidedPhase != GeRecommendationOverlay.GuidedPhase.BUY) return;
         suggestionIndex++;
         selectActiveSuggestion();
+    }
+
+    private void blockSuggestion() {
+        if (activeOpportunity == null) return;
+        Set<Integer> blocked = blockedItemIds();
+        blocked.add(activeOpportunity.itemId);
+        String value = blocked.stream().sorted().map(String::valueOf).collect(java.util.stream.Collectors.joining(","));
+        configManager.setConfiguration("offerscribe", "blockedItemIds", value);
+        suggestionIndex = 0;
+        rankCurrentUniverse();
+    }
+
+    private Set<Integer> blockedItemIds() {
+        Set<Integer> result = new HashSet<>();
+        for (String token : config.blockedItemIds().split(",")) {
+            try { int value = Integer.parseInt(token.trim()); if (value > 0) result.add(value); }
+            catch (NumberFormatException ignored) { }
+        }
+        result.add(13190);
+        result.add(13192);
+        return result;
+    }
+
+    private List<Opportunity> rankServiceCandidates(boolean allowMembers) {
+        List<Opportunity> result = new ArrayList<>();
+        Instant now = Instant.now();
+        for (ExternalRecommendationClient.Candidate value : serviceCandidates) {
+            if (!value.expiresAt.isAfter(now) || value.buyPrice <= 0 || value.sellPrice <= value.buyPrice) continue;
+            net.runelite.api.ItemComposition item = client.getItemDefinition(value.itemId);
+            if (item == null || !item.isTradeable() || !allowMembers && item.isMembers()) continue;
+            long tax = GeTaxCalculator.taxPerItem(value.sellPrice);
+            long profit = value.sellPrice - value.buyPrice - tax;
+            if (profit <= 0) continue;
+            long affordable = availableCoins / value.buyPrice;
+            int quantity = (int)Math.min(Integer.MAX_VALUE, Math.min(value.maxQuantity, affordable));
+            if (quantity <= 0) continue;
+            double roi = (double)profit / value.buyPrice;
+            String name = itemCatalog.name(value.itemId);
+            try {
+                result.add(new Opportunity(value.itemId, name, value.buyPrice, value.sellPrice, quantity,
+                    tax, profit, Math.multiplyExact(profit, quantity), roi, 0, value.generatedAt,
+                    value.risk, value.score));
+            } catch (ArithmeticException ignored) { }
+        }
+        result.sort(Comparator.comparingDouble((Opportunity value)->value.score).reversed().thenComparingInt(value->value.itemId));
+        return result;
     }
 
     private void selectActiveSuggestion() {
@@ -361,7 +471,9 @@ public final class OfferScribePlugin extends Plugin {
             selling ? OfferSnapshot.Side.SELL : OfferSnapshot.Side.BUY,
             selling ? value.sellPrice : value.buyPrice,
             guidedQuantity > 0 ? guidedQuantity : value.quantity, value.profitPerItem, value.roi, value.dataTimestamp,
-            "OSRS Wiki prices and hourly volume; tax, budget, buy limit, freshness, and stability adjusted");
+            usingRecommendationService
+                ? "Configured recommendation service; locally validated against tax, cash, membership, blocks, and open offers"
+                : "OSRS Wiki prices and hourly volume; tax, budget, buy limit, freshness, and stability adjusted");
         recommendationOverlay.show(recommendation);
         inputAssistant.setRecommendation(recommendation);
         panel.showRecommendation(recommendation);
@@ -467,15 +579,32 @@ public final class OfferScribePlugin extends Plugin {
     }
 
     private Opportunity opportunityForItem(int itemId, int quantity) {
+        if (usingRecommendationService) {
+            for (ExternalRecommendationClient.Candidate item : serviceCandidates) {
+                if (item.itemId != itemId || item.sellPrice <= item.buyPrice) continue;
+                long tax = GeTaxCalculator.taxPerItem(item.sellPrice);
+                long profit = item.sellPrice - item.buyPrice - tax;
+                if (profit <= 0) return null;
+                try {
+                    return new Opportunity(item.itemId, itemCatalog.name(item.itemId), item.buyPrice,
+                        item.sellPrice, Math.max(1, quantity), tax, profit,
+                        Math.multiplyExact(profit, Math.max(1, quantity)), (double)profit/item.buyPrice,
+                        0, item.generatedAt, "OPEN POSITION", Double.MAX_VALUE);
+                } catch (ArithmeticException ignored) { return null; }
+            }
+        }
         for (MarketItemSnapshot item : marketUniverse) {
             if (item.itemId != itemId || item.high <= 0 || item.low <= 0) continue;
             long tax = GeTaxCalculator.taxPerItem(item.high);
             long profit = item.high - item.low - tax;
             long volume = Math.min(item.highVolume, item.lowVolume);
             Instant timestamp = item.highTime.isBefore(item.lowTime) ? item.highTime : item.lowTime;
-            return new Opportunity(item.itemId, item.name, item.low, item.high, Math.max(1, quantity),
-                tax, profit, profit * Math.max(1, quantity), item.low <= 0 ? 0 : (double)profit / item.low,
-                volume, timestamp, "OPEN POSITION", Double.MAX_VALUE);
+            try {
+                return new Opportunity(item.itemId, item.name, item.low, item.high, Math.max(1, quantity),
+                    tax, profit, Math.multiplyExact(profit, Math.max(1, quantity)),
+                    item.low <= 0 ? 0 : (double)profit / item.low,
+                    volume, timestamp, "OPEN POSITION", Double.MAX_VALUE);
+            } catch (ArithmeticException ignored) { return null; }
         }
         return null;
     }
