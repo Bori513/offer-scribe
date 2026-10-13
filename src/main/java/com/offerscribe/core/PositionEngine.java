@@ -33,5 +33,7 @@ public final class PositionEngine {
         }
     }
     public long openQuantity(int itemId) { return lots.getOrDefault(itemId, new ArrayDeque<>()).stream().mapToLong(l -> l.quantity).sum(); }
+    public Set<Integer> openItemIds() { return lots.entrySet().stream().filter(e -> e.getValue().stream().anyMatch(l -> l.quantity > 0)).map(Map.Entry::getKey).collect(java.util.stream.Collectors.toSet()); }
+    public Instant latestOpenAt(int itemId) { return lots.getOrDefault(itemId,new ArrayDeque<>()).stream().filter(l -> l.quantity > 0).map(l -> l.at).max(Comparator.naturalOrder()).orElse(Instant.EPOCH); }
     public List<Match> matches() { return Collections.unmodifiableList(matches); }
 }

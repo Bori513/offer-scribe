@@ -69,6 +69,7 @@ public final class OfferScribePlugin extends Plugin {
     private Boolean lastMembersWorld;
     private List<MarketItemSnapshot> marketUniverse = Collections.emptyList();
     private long availableCoins;
+    private boolean inventoryInitialized;
 
     @Provides OfferScribeConfig config(ConfigManager manager) { return manager.getConfig(OfferScribeConfig.class); }
     @Override protected void startUp() throws Exception {
@@ -119,12 +120,21 @@ public final class OfferScribePlugin extends Plugin {
         long coins = inventory.count(ItemID.COINS_995);
         if (coins == availableCoins) return;
         availableCoins = coins;
+        inventoryInitialized = true;
         if (activeOpportunity == null || guidedPhase == GeRecommendationOverlay.GuidedPhase.BUY && activeSlot < 0) rankCurrentUniverse();
     }
 
     @Subscribe public void onGameTick(GameTick tick) {
         webhookClient.tick();
         itemSearchAssistant.tick();
+        if (!inventoryInitialized) {
+            ItemContainer inventory = client.getItemContainer(InventoryID.INVENTORY);
+            if (inventory != null) {
+                availableCoins = inventory.count(ItemID.COINS_995);
+                inventoryInitialized = true;
+                rankCurrentUniverse();
+            }
+        }
         if (!config.marketDataEnabled()) {
             recommendationOverlay.clear();
             inputAssistant.clear();
@@ -185,15 +195,20 @@ public final class OfferScribePlugin extends Plugin {
         lastOpportunityRequest = Instant.now();
         panel.showOpportunityLoading();
         marketData.fetchUniverse(items -> {
-            opportunityRequestPending = false;
-            if (!config.marketDataEnabled()) return;
-            marketUniverse = items;
-            itemCatalog.update(items);
-            availableCoins = inventoryCoins();
-            rankCurrentUniverse();
+            clientThread.invokeLater(() -> {
+                opportunityRequestPending = false;
+                if (!config.marketDataEnabled()) return;
+                marketUniverse = items;
+                itemCatalog.update(items);
+                availableCoins = inventoryCoins();
+                inventoryInitialized = true;
+                rankCurrentUniverse();
+            });
         }, message -> {
-            opportunityRequestPending = false;
-            panel.showOpportunityError(message);
+            clientThread.invokeLater(() -> {
+                opportunityRequestPending = false;
+                panel.showOpportunityError(message);
+            });
         });
     }
 
@@ -212,12 +227,33 @@ public final class OfferScribePlugin extends Plugin {
         panel.showAvailableCash(availableCoins);
         if (activeOpportunity != null && (activeSlot >= 0 || guidedPhase != GeRecommendationOverlay.GuidedPhase.BUY)) return;
         suggestionIndex = 0;
-        for (Opportunity value : rankedOpportunities) {
-            long open = positions.openQuantity(value.itemId);
-            int held = inventoryQuantity(value.itemId);
-            if (open > 0 && held > 0) { activateOpenPosition(value, (int)Math.min(Math.min(Integer.MAX_VALUE, open), held)); return; }
+        Opportunity recovery = recoverHeldPosition();
+        if (recovery != null) {
+            long open = positions.openQuantity(recovery.itemId);
+            activateOpenPosition(recovery, (int)Math.min(Math.min(Integer.MAX_VALUE, open), inventoryQuantity(recovery.itemId)));
+            return;
         }
         selectActiveSuggestion();
+    }
+
+    private Opportunity recoverHeldPosition() {
+        MarketItemSnapshot selected = null;
+        Instant newest = Instant.EPOCH;
+        Set<Integer> openIds = positions.openItemIds();
+        for (MarketItemSnapshot item : marketUniverse) {
+            if (!openIds.contains(item.itemId) || inventoryQuantity(item.itemId) <= 0 || item.high <= 0) continue;
+            Instant acquired = positions.latestOpenAt(item.itemId);
+            if (selected == null || acquired.isAfter(newest)) { selected = item; newest = acquired; }
+        }
+        if (selected == null) return null;
+        int quantity = (int)Math.min(Integer.MAX_VALUE, Math.min(positions.openQuantity(selected.itemId), inventoryQuantity(selected.itemId)));
+        long tax = GeTaxCalculator.taxPerItem(selected.high);
+        long profit = selected.high - selected.low - tax;
+        long volume = Math.min(selected.highVolume, selected.lowVolume);
+        Instant timestamp = selected.highTime.isBefore(selected.lowTime) ? selected.highTime : selected.lowTime;
+        return new Opportunity(selected.itemId, selected.name, selected.low, selected.high, quantity,
+            tax, profit, profit * quantity, selected.low <= 0 ? 0 : (double)profit / selected.low,
+            volume, timestamp, "OPEN POSITION", Double.MAX_VALUE);
     }
 
     private void activateOpenPosition(Opportunity value, int quantity) {
