@@ -169,6 +169,7 @@ public final class OfferScribePlugin extends Plugin {
             return;
         }
         panel.showMarketEnabled();
+        if (reconcileCompletedOffers()) return;
         boolean membersWorld = client.getWorldType().contains(WorldType.MEMBERS);
         if (lastMembersWorld == null || lastMembersWorld != membersWorld) {
             lastMembersWorld = membersWorld;
@@ -297,6 +298,7 @@ public final class OfferScribePlugin extends Plugin {
     private void rankCurrentUniverse() {
         if ((!usingRecommendationService && marketUniverse.isEmpty())
             || (usingRecommendationService && serviceCandidates.isEmpty()) || panel == null) return;
+        if (reconcileCompletedOffers()) return;
         boolean allowMembers = config.includeMembersItems()
             && client.getWorldType().contains(WorldType.MEMBERS);
         rankedOpportunities = usingRecommendationService
@@ -547,6 +549,8 @@ public final class OfferScribePlugin extends Plugin {
 
     private boolean activateCompletedOffer(OfferSnapshot offer, GeRecommendationOverlay.GuidedPhase phase,
         int quantityAfterCollection) {
+        if (activeSlot == offer.getSlot() && guidedPhase == phase && activeOpportunity != null
+            && activeOpportunity.itemId == offer.getItemId()) return true;
         Opportunity completed = opportunityForItem(offer.getItemId(), Math.max(1, offer.getFilledQuantity()));
         if (completed == null) return false;
         activeOpportunity = completed;
@@ -561,6 +565,29 @@ public final class OfferScribePlugin extends Plugin {
         panel.showGuidedPhase(completed, guidedPhase, guidedQuantity);
         applyActiveRecommendation(completed);
         return true;
+    }
+
+    private boolean reconcileCompletedOffers() {
+        GrandExchangeOffer[] offers = client.getGrandExchangeOffers();
+        int usable = client.getWorldType().contains(WorldType.MEMBERS) ? 8 : 3;
+        for (int slot = 0; slot < Math.min(usable, offers.length); slot++) {
+            GrandExchangeOffer offer = offers[slot];
+            if (offer == null || offer.getQuantitySold() <= 0) continue;
+            GrandExchangeOfferState state = offer.getState();
+            boolean completedBuy = state == GrandExchangeOfferState.BOUGHT
+                || state == GrandExchangeOfferState.CANCELLED_BUY;
+            boolean completedSell = state == GrandExchangeOfferState.SOLD
+                || state == GrandExchangeOfferState.CANCELLED_SELL;
+            if (!completedBuy && !completedSell) continue;
+            OfferSnapshot snapshot = observer.snapshot(slot, offer, Instant.now());
+            GeRecommendationOverlay.GuidedPhase phase = completedBuy
+                ? GeRecommendationOverlay.GuidedPhase.COLLECT_BUY
+                : GeRecommendationOverlay.GuidedPhase.COLLECT_SELL;
+            int remaining = completedBuy ? snapshot.getFilledQuantity()
+                : snapshot.getTotalQuantity() - snapshot.getFilledQuantity();
+            if (activateCompletedOffer(snapshot, phase, remaining)) return true;
+        }
+        return false;
     }
 
     private void selectNextBuySuggestion() {
